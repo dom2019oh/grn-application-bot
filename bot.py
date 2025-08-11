@@ -142,21 +142,16 @@ def staff_only():
 async def ping(interaction: discord.Interaction):
     await interaction.response.send_message("🟢 Pong!")
 
-@tree.command(name="staff_hire", description="Hire a user into the staff team", guilds=[Object(id=GUILD_ID)])
-@app_commands.describe(user="User to hire")
+@tree.command(name="staff_hire", description="Hire a new staff member", guilds=[Object(id=GUILD_ID)])
+@app_commands.describe(user="The user to hire")
 async def staff_hire(interaction: discord.Interaction, user: discord.Member):
-    if not await is_hr(interaction): return
-    role = interaction.guild.get_role(STAFF_ROLE_ID)
-    await user.add_roles(role, reason="Staff hire")
-    try:
-        await user.send(
-            "**📋 Staff Hire Confirmation**\n\n"
-            f"Welcome aboard, {user.mention}!\n\n"
-            "You have officially been hired as part of the **Los Santos Roleplay Staff Team**..."
-        )
-    except discord.Forbidden:
-        pass
-    await interaction.response.send_message(f"✅ {user.mention} has been hired as Staff.")
+    await interaction.response.defer()  # Prevents 'Unknown interaction'
+
+    staff_role = interaction.guild.get_role(STAFF_ROLE_ID)
+    await user.add_roles(staff_role)
+    
+    await interaction.followup.send(f"✅ {user.mention} has been hired as Staff.")
+
 
 @tree.command(name="staff_promote", description="Promote a staff member", guilds=[Object(id=GUILD_ID)])
 @app_commands.describe(user="User to promote", new_role="New staff role")

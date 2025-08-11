@@ -99,9 +99,14 @@ async def before_watchdog():
 
 @bot.event
 async def on_ready():
-    synced = await tree.sync(guild=Object(id=GUILD_ID))
-    print(f"✅ Synced {len(synced)} commands")
+    # Sync to your guild only
+    guild = Object(id=GUILD_ID)
+    synced = await tree.sync(guild=guild)
+    
+    print(f"✅ Synced {len(synced)} commands to guild ID {GUILD_ID}")
     print(f"✅ Bot is online as {bot.user}")
+    print(f"🛠 Commands available: {[cmd.name for cmd in synced]}")
+    
     if not watchdog.is_running():
         watchdog.start()
 

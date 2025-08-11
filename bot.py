@@ -232,57 +232,140 @@ async def priority_end(interaction: discord.Interaction):
 # ─────────────────────────────────────────
 # SESSION COMMANDS
 # ─────────────────────────────────────────
-@tree.command(name="host_main_session", description="Announce Main Session", guilds=[Object(id=GUILD_ID)])
-@app_commands.describe(psn="PSN ID", date_time="Date & Time", session_type="Type", aop="Area of Play")
-async def host_main_session(interaction: discord.Interaction, psn: str, date_time: str, session_type: str, aop: str):
-    base_desc = f"""**Los Santos Roleplay™ PlayStation |** Main Session
+# Store RSVP data
+rsvp_data: dict[int, dict] = {}
+
+class RSVPView(View):
+    def __init__(self, base_desc, message_id):
+        super().__init__(timeout=None)
+        self.base_desc = base_desc
+        self.message_id = message_id
+        rsvp_data[self.message_id] = {'base': base_desc, 'attendees': [], 'declines': [], 'late': []}
+
+    async def update_embed(self, interaction: discord.Interaction):
+        data = rsvp_data[self.message_id]
+        summary = (
+            f"\n✅ Attending: {', '.join(data['attendees']) or '—'}"
+            f"\n❌ Not Attending: {', '.join(data['declines']) or '—'}"
+            f"\n🕰️ Late: {', '.join(data['late']) or '—'}"
+        )
+        embed = Embed(description=data['base'] + summary, color=discord.Color.blurple())
+        await interaction.message.edit(embed=embed, view=self)
+
+    @discord.ui.button(label="✅ Attending", style=discord.ButtonStyle.success)
+    async def attending(self, interaction: discord.Interaction, button: Button):
+        data = rsvp_data[self.message_id]
+        mention = interaction.user.mention
+        for lst in ('attendees','declines','late'):
+            if mention in data[lst]:
+                data[lst].remove(mention)
+        data['attendees'].append(mention)
+        await self.update_embed(interaction)
+        await interaction.response.defer()
+
+    @discord.ui.button(label="❌ Not Attending", style=discord.ButtonStyle.danger)
+    async def not_attending(self, interaction: discord.Interaction, button: Button):
+        data = rsvp_data[self.message_id]
+        mention = interaction.user.mention
+        for lst in ('attendees','declines','late'):
+            if mention in data[lst]:
+                data[lst].remove(mention)
+        data['declines'].append(mention)
+        await self.update_embed(interaction)
+        await interaction.response.defer()
+
+    @discord.ui.button(label="🕰️ Late", style=discord.ButtonStyle.secondary)
+    async def late(self, interaction: discord.Interaction, button: Button):
+        data = rsvp_data[self.message_id]
+        mention = interaction.user.mention
+        for lst in ('attendees','declines','late'):
+            if mention in data[lst]:
+                data[lst].remove(mention)
+        data['late'].append(mention)
+        await self.update_embed(interaction)
+        await interaction.response.defer()
+
+@tree.command(
+    name="host_main_session",
+    description="Announce Main Session with RSVP buttons",
+    guilds=[Object(id=GUILD_ID)]
+)
+@app_commands.describe(
+    psn="Your PlayStation Network ID",
+    date_time="Date & time of the session (e.g. July 26, 20:00 UTC)",
+    session_type="Type of session (e.g. Patrol, Heist)",
+    aop="Area of Play"
+)
+async def host_main_session(
+    interaction: discord.Interaction,
+    psn: str,
+    date_time: str,
+    session_type: str,
+    aop: str
+):
+    ping_role = interaction.guild.get_role(1375046631237484605)  # Ping role
+
+    base_desc = f"""**Los Santos Roleplay™ PlayStation |** `Main Session`
+
+> *This message upholds all information regarding the upcoming roleplay session hosted by Los Santos Roleplay. Please take your time to review the details below and if any questions arise, please ask the host of the session.*
 
 **PSN:** {psn}
 
+▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬
+**Commencement Process.**
+> *At the below time invites will begin being disputed. You will then be directed to your proper briefing channels. We ask that you're to ensure you are connected to the Session Queue voice channel.*
+
+▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬
+**Session Orientation**
+> *Before the session must begin, all individuals must be orientated accordingly. The orientation will happen after the invites are dispersed and you will be briefed by the highest-ranking official in terms of your department.*
+
+▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬
+**Session Details.**
 **Start Time:** {date_time}
-• **Type:** {session_type}
-• **AOP:** {aop}
+• **Session Type:** {session_type}
+• **Area of Play:** {aop}
+• [LSRPNetwork Guidelines](https://discord.com/channels/1324117813878718474/1375046710002319460/1395728361371861103) • [Priority Guidelines](https://discord.com/channels/1324117813878718474/1399853866337566881) •
 """
     embed = Embed(description=base_desc, color=discord.Color.blurple())
-    await interaction.response.send_message(embed=embed)
-    message = await interaction.original_response()
-    for emoji in ("✅", "❌", "🕰️"):
-        await message.add_reaction(emoji)
-    rsvp_data[message.id] = {'base': base_desc, 'attendees': [], 'declines': [], 'late': []}
+    await interaction.response.send_message(content=ping_role.mention, embed=embed, view=RSVPView(base_desc, interaction.id))
 
-@bot.event
-async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
-    if payload.message_id not in rsvp_data or payload.user_id == bot.user.id:
-        return
-    data = rsvp_data[payload.message_id]
-    user_mention = f"<@{payload.user_id}>"
-    emoji = str(payload.emoji)
-    for lst in ('attendees','declines','late'):
-        if user_mention in data[lst]:
-            data[lst].remove(user_mention)
-    if emoji == "✅":
-        data['attendees'].append(user_mention)
-    elif emoji == "❌":
-        data['declines'].append(user_mention)
-    elif emoji == "🕰️":
-        data['late'].append(user_mention)
-    summary = f"\n✅ Attending: {', '.join(data['attendees']) or '—'}\n❌ Not Attending: {', '.join(data['declines']) or '—'}\n🕰️ Late: {', '.join(data['late']) or '—'}"
-    channel = bot.get_channel(payload.channel_id)
-    msg = await channel.fetch_message(payload.message_id)
-    new_embed = Embed(description=data['base'] + summary, color=discord.Color.blurple())
-    await msg.edit(embed=new_embed)
 
-@tree.command(name="start_session", description="Announce session start", guilds=[Object(id=GUILD_ID)])
-@app_commands.describe(psn="PSN Username", aop="Area of Play")
+# Start Session Command
+@tree.command(name="start_session", description="Announce that the roleplay session is starting now", guilds=[Object(id=GUILD_ID)])
+@app_commands.describe(psn="Your PlayStation Network username", aop="Area of Play for the session")
 async def start_session(interaction: discord.Interaction, psn: str, aop: str):
-    session_role = interaction.guild.get_role(PING_ROLE_ID)
-    embed = Embed(title="🟢 SESSION START", description=f"**Host PSN:** {psn}\n**AOP:** {aop}", color=discord.Color.green())
+    session_role = interaction.guild.get_role(1375046631237484605)  # Session notify role
+    embed = Embed(
+        title="🟢 SESSION START NOTICE",
+        description=(
+            "**The session is now officially starting!**\n\n"
+            f"📍 **Host PSN:** {psn}\n"
+            f"📍 **AOP:** {aop}\n"
+            f"🕒 **Start Time:** <t:{int(datetime.datetime.now().timestamp())}:F>\n\n"
+            "🔊 **Please Ensure:**\n"
+            "• You are in correct RP attire.\n"
+            "• Your mic is working.\n"
+            "• You follow all RP & community guidelines.\n"
+            "• You join promptly to avoid being marked absent."
+        ),
+        color=discord.Color.green()
+    )
     await interaction.response.send_message(content=session_role.mention, embed=embed)
 
-@tree.command(name="end_session", description="Announce session end", guilds=[Object(id=GUILD_ID)])
+
+# End Session Command
+@tree.command(name="end_session", description="Announce that the roleplay session has ended", guilds=[Object(id=GUILD_ID)])
 async def end_session(interaction: discord.Interaction):
-    session_role = interaction.guild.get_role(PING_ROLE_ID)
-    embed = Embed(title="🔴 SESSION CLOSED", description="**This session has now concluded.**", color=discord.Color.red())
+    session_role = interaction.guild.get_role(1375046631237484605)
+    embed = Embed(
+        title="🔴 SESSION CLOSED",
+        description=(
+            "**This session has now concluded.**\n\n"
+            f"🕒 **End Time:** <t:{int(datetime.datetime.now().timestamp())}:F>\n\n"
+            "🙏 **Thank you to everyone who attended and maintained professionalism throughout the session.**"
+        ),
+        color=discord.Color.red()
+    )
     await interaction.response.send_message(content=session_role.mention, embed=embed)
 
 # ─────────────────────────────────────────

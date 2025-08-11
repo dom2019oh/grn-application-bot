@@ -233,7 +233,8 @@ async def priority_end(interaction: discord.Interaction):
 # ─────────────────────────────────────────
 # SESSION COMMANDS
 # ─────────────────────────────────────────
-# Store RSVP data
+
+# Store RSVP data in memory
 rsvp_data: dict[int, dict] = {}
 
 class RSVPView(View):
@@ -244,6 +245,7 @@ class RSVPView(View):
         rsvp_data[self.message_id] = {'base': base_desc, 'attendees': [], 'declines': [], 'late': []}
 
     async def update_embed(self, interaction: discord.Interaction):
+        """Update the embed with the current RSVP lists."""
         data = rsvp_data[self.message_id]
         summary = (
             f"\n✅ Attending: {', '.join(data['attendees']) or '—'}"
@@ -257,7 +259,7 @@ class RSVPView(View):
     async def attending(self, interaction: discord.Interaction, button: Button):
         data = rsvp_data[self.message_id]
         mention = interaction.user.mention
-        for lst in ('attendees','declines','late'):
+        for lst in ('attendees', 'declines', 'late'):
             if mention in data[lst]:
                 data[lst].remove(mention)
         data['attendees'].append(mention)
@@ -268,7 +270,7 @@ class RSVPView(View):
     async def not_attending(self, interaction: discord.Interaction, button: Button):
         data = rsvp_data[self.message_id]
         mention = interaction.user.mention
-        for lst in ('attendees','declines','late'):
+        for lst in ('attendees', 'declines', 'late'):
             if mention in data[lst]:
                 data[lst].remove(mention)
         data['declines'].append(mention)
@@ -279,12 +281,13 @@ class RSVPView(View):
     async def late(self, interaction: discord.Interaction, button: Button):
         data = rsvp_data[self.message_id]
         mention = interaction.user.mention
-        for lst in ('attendees','declines','late'):
+        for lst in ('attendees', 'declines', 'late'):
             if mention in data[lst]:
                 data[lst].remove(mention)
         data['late'].append(mention)
         await self.update_embed(interaction)
         await interaction.response.defer()
+
 
 @tree.command(
     name="host_main_session",
@@ -304,7 +307,7 @@ async def host_main_session(
     session_type: str,
     aop: str
 ):
-    ping_role = interaction.guild.get_role(1375046631237484605)  # Ping role
+    ping_role = interaction.guild.get_role(1375046631237484605)  # Session notify role
 
     base_desc = f"""**Los Santos Roleplay™ PlayStation |** `Main Session`
 
@@ -331,7 +334,6 @@ async def host_main_session(
     await interaction.response.send_message(content=ping_role.mention, embed=embed, view=RSVPView(base_desc, interaction.id))
 
 
-# Start Session Command
 @tree.command(name="start_session", description="Announce that the roleplay session is starting now", guilds=[Object(id=GUILD_ID)])
 @app_commands.describe(psn="Your PlayStation Network username", aop="Area of Play for the session")
 async def start_session(interaction: discord.Interaction, psn: str, aop: str):
@@ -354,7 +356,6 @@ async def start_session(interaction: discord.Interaction, psn: str, aop: str):
     await interaction.response.send_message(content=session_role.mention, embed=embed)
 
 
-# End Session Command
 @tree.command(name="end_session", description="Announce that the roleplay session has ended", guilds=[Object(id=GUILD_ID)])
 async def end_session(interaction: discord.Interaction):
     session_role = interaction.guild.get_role(1375046631237484605)

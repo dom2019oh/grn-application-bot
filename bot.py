@@ -735,31 +735,41 @@ async def pso_promote(interaction: discord.Interaction, user: discord.Member, ra
             await user.add_roles(supervisor_role)
     await interaction.response.send_message(f"{user.mention} promoted to **{rank_name}** with callsign `{callsign}`.")
 
-# ========= Ready Event: sync + panel + watchdog =========
+# ========= Ready Event: global + HQ sync, panel, watchdog =========
 @bot.event
 async def on_ready():
-    # persist panel view
+    # Keep the application panel view alive across restarts (persistent view)
     try:
         bot.add_view(ApplicationPanel())
     except Exception:
         pass
 
-    # sync to HQ only (fast)
-    synced = await tree.sync(guild=Object(id=HQ_GUILD_ID))
-    print(f"✅ Synced {len(synced)} commands to HQ guild {HQ_GUILD_ID}")
-    print(f"🛠 Commands: {[c.name for c in synced]}")
+    # --- Slash command sync ---
+    try:
+        # 1) Instant sync to HQ guild (fast updates for testing)
+        hq_guild = discord.Object(id=HQ_GUILD_ID)
+        hq_cmds = await tree.sync(guild=hq_guild)
+        print(f"✅ Synced {len(hq_cmds)} commands to HQ guild {HQ_GUILD_ID}")
+        print(f"🛠 Commands: {[c.name for c in hq_cmds]}")
 
-    # start watchdog
+        # 2) Global sync (available in all servers; Discord may take up to ~1 hour to propagate)
+        global_cmds = await tree.sync()
+        print(f"🌍 Pushed {len(global_cmds)} commands globally")
+    except Exception as e:
+        print(f"❌ Error during command sync: {e}")
+
+    # --- Watchdog (start once) ---
     if not watchdog.is_running():
         watchdog.start()
         print("[watchdog] Started watchdog loop.")
 
-    # auto-post panel if not present
+    # --- Auto-post the application panel if not already present recently ---
     try:
         channel = bot.get_channel(PANEL_CHANNEL_ID)
         if channel:
             async for msg in channel.history(limit=20):
                 if msg.author == bot.user and msg.components:
+                    # Panel already present, do nothing
                     break
             else:
                 embed = Embed(
@@ -777,10 +787,12 @@ async def on_ready():
                 )
                 await channel.send(embed=embed, view=ApplicationPanel())
                 print(f"✅ Application panel posted in #{channel.name}")
+        else:
+            print(f"⚠️ PANEL_CHANNEL_ID {PANEL_CHANNEL_ID} not found or bot lacks access.")
     except Exception as e:
         print(f"⚠️ Could not post application panel: {e}")
 
-    print(f"✅ Bot is online as {bot.user}")
+    print(f"🟢 Bot is online as {bot.user}")
 
 # ========= Run =========
 if __name__ == "__main__":

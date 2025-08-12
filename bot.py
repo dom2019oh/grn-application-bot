@@ -12,7 +12,7 @@ from typing import Dict
 
 import discord
 from discord import app_commands, Embed
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord.ui import View, Button, Select
 
 from flask import Flask, request, redirect, render_template_string

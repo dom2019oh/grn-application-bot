@@ -64,14 +64,6 @@ PSO_ROLES = {
     "Supervisor": 1375046546554621952
 }
 
-import os
-import random
-import datetime
-import discord
-from discord import app_commands, Embed, Object
-from discord.ext import commands, tasks
-from discord.ui import View, Button
-
 # ─────────────────────────────────────────
 # CONFIGURATION
 # ─────────────────────────────────────────
@@ -128,6 +120,27 @@ PSO_ROLES = {
     "ADOPS": 1375046524567818270,
     "PSO_Main": 1375046521904431124,
     "Supervisor": 1375046546554621952
+}
+
+# ── Applicant role IDs by platform
+APPLICANT_PLATFORM_ROLES = {
+    "PS4":   1401961522556698739,  # PS4 Applicant
+    "PS5":   1401961758502944900,  # PS5 Applicant
+    "XboxOG":1401961991756578817,  # Xbox OG Applicant
+}
+
+# (Accepted roles – for later approvals)
+ACCEPTED_PLATFORM_ROLES = {
+    "PS4":   1367753287872286720,
+    "PS5":   1367753535839797278,
+    "XboxOG":1367753756367912960,
+}
+
+# ── Applicant role IDs by department
+APPLICANT_DEPT_ROLES = {
+    "PSO":  1370719624051691580,  # Public Safety Applicant
+    "CO":   1323758149009936424,  # Civilian Operations Applicant
+    "SAFR": 1370719781488955402,  # Fire & Rescue Applicant
 }
 
 # Application Panel
@@ -285,11 +298,46 @@ class PlatformSelect(Select):
     async def callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
             return await interaction.response.send_message("This menu isn’t for you.", ephemeral=True)
+
+        # Save platform
         app_sessions.setdefault(self.user_id, {})["platform"] = self.values[0]
         sess = app_sessions[self.user_id]
         dept = sess.get("dept", "CO")
         subdept = sess.get("subdept", "N/A")
         platform = sess["platform"]
+        guild_id = sess.get("guild_id")  # We'll set this when they select dept from the panel
+
+        # 🔹 Assign applicant roles in the guild where they clicked the panel
+        if guild_id:
+            guild = bot.get_guild(guild_id)
+            if guild:
+                try:
+                    member = guild.get_member(self.user_id) or await guild.fetch_member(self.user_id)
+                    roles_to_add = []
+
+                    # Platform applicant role
+                    plat_role_id = APPLICANT_PLATFORM_ROLES.get(platform)
+                    if plat_role_id:
+                        plat_role = guild.get_role(plat_role_id)
+                        if plat_role:
+                            roles_to_add.append(plat_role)
+
+                    # Department applicant role
+                    dept_role_id = APPLICANT_DEPT_ROLES.get(dept)
+                    if dept_role_id:
+                        dept_role = guild.get_role(dept_role_id)
+                        if dept_role:
+                            roles_to_add.append(dept_role)
+
+                    if roles_to_add:
+                        await member.add_roles(*roles_to_add, reason="Application started (platform selected in DM)")
+
+                except discord.Forbidden:
+                    print(f"⚠️ Missing permissions to assign roles for {interaction.user}")
+                except Exception as e:
+                    print(f"⚠️ Error assigning applicant roles: {e}")
+
+        # ✅ Continue with application
         summary = (
             f"**Department:** {dept}\n"
             f"**Sub-Department:** {subdept}\n"
@@ -298,6 +346,7 @@ class PlatformSelect(Select):
         )
         emb = Embed(title="Application Details Confirmed", description=summary, color=dept_color(dept))
         await interaction.response.edit_message(embed=emb, view=None)
+
         # TODO: call your question flow here
         # await start_application_questions(interaction.user, dept, subdept, platform)
 

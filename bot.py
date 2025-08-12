@@ -3,10 +3,30 @@ import random
 import time
 import datetime
 import discord
+import threading
 from typing import Dict
 from discord import app_commands, Embed, Object
 from discord.ext import commands, tasks
 from discord.ui import View, Button, Select
+from flask import Flask, request
+
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is running."
+
+@app.route('/auth')
+def auth():
+    code = request.args.get("code")
+    return f"Received code: {code}. You can close this page."
+
+def run_web():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
+
+threading.Thread(target=run_web).start()
+
 
 # ─────────────────────────────────────────
 # CONFIGURATION

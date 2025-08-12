@@ -1,31 +1,176 @@
+# ─────────────────────────────────────────
+# IMPORTS
+# ─────────────────────────────────────────
 import os
-import random
 import time
-import datetime
-import discord
+import random
 import threading
+import requests
+import urllib.parse
+import asyncio
 from typing import Dict
-from discord import app_commands, Embed, Object
-from discord.ext import commands, tasks
+
+import discord
+from discord import app_commands, Embed
+from discord.ext import commands
 from discord.ui import View, Button, Select
-from flask import Flask, request
 
-app = Flask('')
+from flask import Flask, request, redirect, render_template_string
 
-@app.route('/')
-def home():
-    return "Bot is running."
+# ─────────────────────────────────────────
+# OAUTH2 AUTHORIZATION WEB SERVER
+# ─────────────────────────────────────────
+import os, time, random, threading, requests, urllib.parse, asyncio
+from typing import Dict
+from flask import Flask, request, redirect, render_template_string
 
-@app.route('/auth')
-def auth():
+# ── ENV CONFIG ───────────────────────────
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CLIENT_ID = os.getenv("CLIENT_ID")
+CLIENT_SECRET = os.getenv("CLIENT_SECRET")
+REDIRECT_URI = os.getenv("REDIRECT_URI", "https://lsrpnetwork-verification.up.railway.app/auth")
+
+# Guild IDs
+HQ_GUILD_ID       = int(os.getenv("HQ_GUILD_ID", "1324117813878718474"))
+PS4_GUILD_ID      = int(os.getenv("PS4_GUILD_ID",  "0"))
+PS5_GUILD_ID      = int(os.getenv("PS5_GUILD_ID",  "0"))
+XBOX_OG_GUILD_ID  = int(os.getenv("XBOX_OG_GUILD_ID", "0"))
+
+PLATFORM_GUILDS = {
+    "PS4":    PS4_GUILD_ID,
+    "PS5":    PS5_GUILD_ID,
+    "XboxOG": XBOX_OG_GUILD_ID
+}
+
+# Log channel for successful auth
+AUTH_CODE_LOG_CHANNEL = int(os.getenv("OAUTH_LOG_CHANNEL_ID", "0"))
+
+# Code storage
+CODE_TTL_SECONDS = 10 * 60  # 10 minutes
+pending_codes: Dict[int, dict] = {}
+
+# ── WEB APP ──────────────────────────────
+app = Flask(__name__)
+
+@app.route("/")
+def health():
+    return "✅ LSRP Network System is running."
+
+_HTML_FORM = """
+<!doctype html><html><head><meta charset="utf-8"><title>LSRP Auth</title></head>
+<body style="font-family:system-ui;margin:40px;max-width:780px">
+<h2>Los Santos Roleplay Network™® — Authorization</h2>
+<p>Enter the 6-digit code the bot sent you in DMs to finish joining.</p>
+<form method="POST">
+  <input name="pin" maxlength="6" pattern="\\d{6}" required placeholder="123456" />
+  <button type="submit">Confirm</button>
+</form>
+<p style="color:gray">If you opened this directly, go back to your DM and use the link again.</p>
+</body></html>
+"""
+
+@app.route("/auth", methods=["GET", "POST"])
+def oauth_handler():
+    # 1) No ?code → redirect to Discord authorize page
     code = request.args.get("code")
-    return f"Received code: {code}. You can close this page."
+    if not code:
+        auth_url = (
+            "https://discord.com/oauth2/authorize?"
+            + urllib.parse.urlencode({
+                "client_id": CLIENT_ID,
+                "response_type": "code",
+                "redirect_uri": REDIRECT_URI,
+                "scope": "identify guilds.join"
+            })
+        )
+        return redirect(auth_url, code=302)
 
+    # 2) Show HTML form on GET
+    if request.method == "GET":
+        return render_template_string(_HTML_FORM)
+
+    # 3) Get entered pin
+    pin = (request.form.get("pin") or "").strip()
+
+    # 4) Exchange code → access_token
+    token_resp = requests.post(
+        "https://discord.com/api/oauth2/token",
+        data={
+            "client_id": CLIENT_ID,
+            "client_secret": CLIENT_SECRET,
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": REDIRECT_URI,
+        },
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        timeout=15
+    )
+    if token_resp.status_code != 200:
+        return f"Token exchange failed: {token_resp.text}", 400
+    access_token = token_resp.json().get("access_token")
+
+    # 5) Identify user
+    me = requests.get(
+        "https://discord.com/api/users/@me",
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=15
+    )
+    if me.status_code != 200:
+        return f"User fetch failed: {me.text}", 400
+    user_id = int(me.json()["id"])
+
+    # 6) Validate pending code
+    data = pending_codes.get(user_id)
+    if not data:
+        return "No active authorization found. Ask staff to run /auth_grant again.", 400
+    if time.time() - float(data["timestamp"]) > CODE_TTL_SECONDS:
+        pending_codes.pop(user_id, None)
+        return "Your code expired. Ask staff to generate a new one.", 400
+    if pin != str(data["code"]):
+        return "Invalid code. Please go back and try again.", 400
+
+    # 7) Get guild from platform
+    target_guild = PLATFORM_GUILDS.get(data["platform"])
+    if not target_guild:
+        return "Platform guild not found in configuration.", 500
+
+    # 8) Add user to guild
+    put_resp = requests.put(
+        f"https://discord.com/api/guilds/{target_guild}/members/{user_id}",
+        headers={"Authorization": f"Bot {BOT_TOKEN}", "Content-Type": "application/json"},
+        json={"access_token": access_token},
+        timeout=15
+    )
+    if put_resp.status_code not in (200, 201, 204):
+        if not (put_resp.status_code == 400 and "already" in put_resp.text.lower()):
+            return f"Guild join failed: {put_resp.status_code} {put_resp.text}", 400
+
+    # 9) Log success in HQ server
+    try:
+        guild = bot.get_guild(HQ_GUILD_ID)
+        if guild:
+            log_ch = guild.get_channel(AUTH_CODE_LOG_CHANNEL)
+            if log_ch:
+                asyncio.run_coroutine_threadsafe(
+                    log_ch.send(
+                        f"✅ **Auth success** for <@{user_id}> | Dept `{data['dept']}` | "
+                        f"Platform `{data['platform']}` | Code `{data['code']}`"
+                    ),
+                    bot.loop
+                )
+    except Exception:
+        pass
+
+    # 10) Cleanup
+    pending_codes.pop(user_id, None)
+    return "✅ Success! You can close this tab and return to Discord."
+
+# ── Start web server in thread ────────────
 def run_web():
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
 
-threading.Thread(target=run_web).start()
+threading.Thread(target=run_web, daemon=True).start()
 
 
 # ─────────────────────────────────────────

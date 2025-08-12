@@ -51,8 +51,8 @@ CALLSIGN_RANGES = {
 }
 PSO_ROLES = {
     "Cadet": 1375046543329202186,
-    "Officer I": 1375046541869584464,
-    "Officer II": 1375046540925599815,
+    "Trooper": 1375046541869584464,
+    "Trooper First Class": 1375046540925599815,
     "Sergeant": 1392169682596790395,
     "Master Sergeant": 1375046535410356295,
     "Lieutenant": 1375046533833035778,
@@ -64,6 +64,76 @@ PSO_ROLES = {
     "Supervisor": 1375046546554621952
 }
 
+import os
+import random
+import datetime
+import discord
+from discord import app_commands, Embed, Object
+from discord.ext import commands, tasks
+from discord.ui import View, Button
+
+# ─────────────────────────────────────────
+# CONFIGURATION
+# ─────────────────────────────────────────
+GUILD_ID = 1324117813878718474
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+
+# Staff / HR
+PSO_STAFF_ID = 1375046497590054985
+PROMOTION_LOG_CHANNEL = 1400933920534560989
+DEMOTION_LOG_CHANNEL = 1400934049505349764
+ALLOWED_HR_ROLES = [
+    1395743738952941670,  # Head Of Staff
+    1375046490564853772,  # PS Manager
+    1375046491466371183,  # PS Asst. Manager
+]
+STAFF_ROLE_ID = 1375046499414704138
+STAFF_ROLES = [
+    1380937336094982154,
+    1375046500098506844,
+    1375046499414704138,
+]
+
+# Priority
+PRIORITY_LOG_CHANNEL_ID = 1398746576784068703
+active_priority = None
+
+# Session
+PING_ROLE_ID = 1375046631237484605  # Session notify role
+rsvp_data: dict[int, dict] = {}
+
+# PSO Ranks & Roles
+CALLSIGN_RANGES = {
+    "Cadet": (1000, 1999, "C"),
+    "Officer I": (800, 899, "B"),
+    "Officer II": (700, 799, "B"),
+    "Sergeant": (600, 699, "B"),
+    "Master Sergeant": (500, 599, "B"),
+    "Lieutenant": (400, 499, "B"),
+    "Captain": (300, 399, "B"),
+    "Major": (200, 299, "L"),
+    "Commander": (100, 199, "L"),
+    "ADOPS": (102, 102, "L"),
+}
+PSO_ROLES = {
+    "Cadet": 1375046543329202186,
+    "Trooper": 1375046541869584464,
+    "Trooper First Class": 1375046540925599815,
+    "Sergeant": 1392169682596790395,
+    "Master Sergeant": 1375046535410356295,
+    "Lieutenant": 1375046533833035778,
+    "Captain": 1375046532847501373,
+    "Major": 1375046529752105041,
+    "Commander": 1375046528963444819,
+    "ADOPS": 1375046524567818270,
+    "PSO_Main": 1375046521904431124,
+    "Supervisor": 1375046546554621952
+}
+
+# Application Panel
+PANEL_CHANNEL_ID = 1324115220725108877
+STAFF_CAN_POST_PANEL_ROLE = 1384558588478886022  # who’s allowed if you ever post via command
+
 # ─────────────────────────────────────────
 # BOT SETUP
 # ─────────────────────────────────────────
@@ -72,6 +142,218 @@ intents.members = True
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
+
+# ─────────────────────────────────────────
+# AUTO-POST APPLICATION PANEL ON STARTUP
+# ─────────────────────────────────────────
+
+@bot.event
+async def on_ready():
+    # keep panel view alive across restarts
+    try:
+        bot.add_view(ApplicationPanel())
+    except Exception:
+        pass
+
+    # sync to your guild
+    guild = Object(id=GUILD_ID)
+    synced = await tree.sync(guild=guild)
+    print(f"✅ Synced {len(synced)} commands to guild ID {GUILD_ID}")
+    print(f"🛠 Commands available: {[cmd.name for cmd in synced]}")
+
+    # start watchdog once
+    if not watchdog.is_running():
+        watchdog.start()
+        print("[watchdog] Started watchdog loop.")
+
+    # auto-post panel if not present recently
+    try:
+        channel = bot.get_channel(PANEL_CHANNEL_ID)
+        if channel:
+            async for msg in channel.history(limit=20):
+                if msg.author == bot.user and msg.components:
+                    break
+            else:
+                embed = Embed(
+                    title="📋 Los Santos Roleplay Network™® | Department Applications",
+                    description=(
+                        "Welcome to the official **Los Santos Roleplay Network™®** application panel.\n"
+                        "Select a department below to begin. I will continue your application in DMs.\n\n"
+                        "**Departments:**\n"
+                        "• **PSO** – Public Safety Office (Law Enforcement)\n"
+                        "• **CO** – Civilian Operations (Civilian Roleplay)\n"
+                        "• **SAFR** – San Andreas Fire & Rescue (Fire & EMS)\n\n"
+                        "*Please ensure your DMs are open to receive questions.*"
+                    ),
+                    color=discord.Color.blurple(),
+                )
+                await channel.send(embed=embed, view=ApplicationPanel())
+                print(f"✅ Application panel posted in #{channel.name}")
+    except Exception as e:
+        print(f"⚠️ Could not post application panel: {e}")
+
+    print(f"✅ Bot is online as {bot.user}")
+
+
+# ─────────────────────────────────────────
+# BOT SETUP
+# ─────────────────────────────────────────
+intents = discord.Intents.default()
+intents.members = True
+intents.message_content = True
+bot = commands.Bot(command_prefix="!", intents=intents)
+tree = bot.tree
+
+# ─────────────────────────────────────────
+# AUTO-POST APPLICATION PANEL ON STARTUP
+# ─────────────────────────────────────────
+
+@bot.event
+async def on_ready():
+    # Keep persistent view alive
+    bot.add_view(ApplicationPanel())
+
+    # Post the application panel automatically if not found in the channel
+    try:
+        channel = bot.get_channel(PANEL_CHANNEL_ID)
+        if channel is not None:
+            # Check last 20 messages to avoid repost spam
+            async for msg in channel.history(limit=20):
+                if msg.author == bot.user and len(msg.components) > 0:
+                    break
+            else:
+                embed = Embed(
+                    title="📋 Los Santos Roleplay Network™® | Department Applications",
+                    description=(
+                        "Welcome to the official **Los Santos Roleplay Network™®** application panel.\n"
+                        "Select a department below to begin. I will continue your application in DMs.\n\n"
+                        "**Departments:**\n"
+                        "• **PSO** – Public Safety Office (Law Enforcement)\n"
+                        "• **CO** – Civilian Operations (Civilian Roleplay)\n"
+                        "• **SAFR** – San Andreas Fire & Rescue (Fire & EMS)\n\n"
+                        "*Please ensure your DMs are open to receive questions.*"
+                    ),
+                    color=discord.Color.blurple(),
+                )
+                await channel.send(embed=embed, view=ApplicationPanel())
+                print(f"✅ Application panel posted in {channel.name}")
+    except Exception as e:
+        print(f"⚠️ Could not post application panel: {e}")
+
+    print(f"✅ Bot is online as {bot.user}")
+
+# ---------- Simple session store ----------
+app_sessions: dict[int, dict] = {}
+
+def dept_color(dept: str) -> discord.Color:
+    return discord.Color.blue() if dept == "PSO" else (discord.Color.green() if dept == "CO" else discord.Color.red())
+
+# ---------- DM selects ----------
+class SubDeptSelect(Select):
+    def __init__(self, user_id: int):
+        super().__init__(
+            placeholder="Select sub-department…",
+            min_values=1, max_values=1,
+            options=[
+                discord.SelectOption(label="Blaine County Sheriff's Office (BCSO)", value="BCSO"),
+                discord.SelectOption(label="San Andreas State Police (SASP)", value="SASP"),
+            ],
+        )
+        self.user_id = user_id
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("This menu isn’t for you.", ephemeral=True)
+        app_sessions.setdefault(self.user_id, {})["subdept"] = self.values[0]
+        dept = app_sessions[self.user_id]["dept"]
+        emb = Embed(title="Platform Selection", description="Choose your platform:", color=dept_color(dept))
+        await interaction.response.edit_message(embed=emb, view=PlatformView(self.user_id))
+
+class PlatformSelect(Select):
+    def __init__(self, user_id: int):
+        super().__init__(
+            placeholder="Select platform…",
+            min_values=1, max_values=1,
+            options=[
+                discord.SelectOption(label="PlayStation 4", value="PS4"),
+                discord.SelectOption(label="PlayStation 5", value="PS5"),
+                discord.SelectOption(label="Xbox Old Gen", value="XboxOG"),
+            ],
+        )
+        self.user_id = user_id
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("This menu isn’t for you.", ephemeral=True)
+        app_sessions.setdefault(self.user_id, {})["platform"] = self.values[0]
+        sess = app_sessions[self.user_id]
+        dept = sess.get("dept", "CO")
+        subdept = sess.get("subdept", "N/A")
+        platform = sess["platform"]
+        summary = (
+            f"**Department:** {dept}\n"
+            f"**Sub-Department:** {subdept}\n"
+            f"**Platform:** {platform}\n\n"
+            "✅ Selections saved. I’ll now begin your application questions."
+        )
+        emb = Embed(title="Application Details Confirmed", description=summary, color=dept_color(dept))
+        await interaction.response.edit_message(embed=emb, view=None)
+        # TODO: call your question flow here
+        # await start_application_questions(interaction.user, dept, subdept, platform)
+
+class PlatformView(View):
+    def __init__(self, user_id: int):
+        super().__init__(timeout=300)
+        self.add_item(PlatformSelect(user_id))
+
+class SubDeptView(View):
+    def __init__(self, user_id: int):
+        super().__init__(timeout=300)
+        self.add_item(SubDeptSelect(user_id))
+
+# ---------- Public panel select ----------
+class DepartmentSelect(Select):
+    def __init__(self):
+        super().__init__(
+            placeholder="Select a department to begin…",
+            min_values=1, max_values=1,
+            options=[
+                discord.SelectOption(label="Public Safety Office (PSO)", value="PSO", description="BCSO / SASP"),
+                discord.SelectOption(label="Civilian Operations (CO)", value="CO", description="Civilian Roleplay"),
+                discord.SelectOption(label="San Andreas Fire & Rescue (SAFR)", value="SAFR", description="Fire & EMS"),
+            ],
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        user = interaction.user
+        app_sessions[user.id] = {"dept": self.values[0]}
+        dept = app_sessions[user.id]["dept"]
+        color = dept_color(dept)
+        try:
+            dm = await user.create_dm()
+            intro = Embed(
+                title="📋 Los Santos Roleplay Network™® | Application",
+                description=(
+                    f"Department selected: **{dept}**\n\n"
+                    "I’ll guide you through the steps here in DMs.\n"
+                    "If your DMs are closed, please enable them and select again."
+                ),
+                color=color,
+            )
+            await dm.send(embed=intro)
+            if dept == "PSO":
+                await dm.send(embed=Embed(title="Sub-Department Selection", description="Choose your **PSO** sub-department:", color=color), view=SubDeptView(user.id))
+            else:
+                await dm.send(embed=Embed(title="Platform Selection", description="Choose your platform:", color=color), view=PlatformView(user.id))
+            await interaction.response.send_message("📬 I’ve sent you a DM to continue your application.", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.response.send_message("⚠️ I couldn’t DM you. Please enable DMs and select again.", ephemeral=True)
+
+class ApplicationPanel(View):
+    def __init__(self):
+        super().__init__(timeout=None)  # persistent view
+        self.add_item(DepartmentSelect())
+
 
 # ─────────────────────────────────────────
 # WATCHDOG: Restart if Discord unreachable

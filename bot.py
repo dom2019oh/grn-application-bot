@@ -1,6 +1,6 @@
 # =========================
-# LSRP Network System™®  — Application Core + Auth + Anti-ping
-# Focused build: keep application system + /auth_grant + anti-ping + role/callsign on join (PS4)
+# LSRP Network System™®  — Application Core + Auth + Anti-ping + Jarvis
+# Focus build: application system + /auth_grant (UNCHANGED) + anti-ping + role/callsign on PS4 + /jarvis
 # =========================
 
 import os
@@ -31,7 +31,7 @@ CLIENT_SECRET = os.getenv("CLIENT_SECRET") or "KcaapGwCEsH_JDlIbrAX3lghSC-tDREN"
 REDIRECT_URI = os.getenv("REDIRECT_URI", "https://lsrpnetwork-verification.up.railway.app/auth")
 
 # Guilds
-HQ_GUILD_ID      = int(os.getenv("HQ_GUILD_ID", "1294319617539575808"))  # per your last message
+HQ_GUILD_ID      = int(os.getenv("HQ_GUILD_ID", "1294319617539575808"))
 PS4_GUILD_ID     = int(os.getenv("PS4_GUILD_ID", "1324117813878718474"))
 PS5_GUILD_ID     = int(os.getenv("PS5_GUILD_ID", "1401903156274790441"))
 XBOX_OG_GUILD_ID = int(os.getenv("XBOX_OG_GUILD_ID", "1375494043831898334"))
@@ -64,7 +64,7 @@ APPLICANT_DEPT_ROLES = {
     "SAFR": 1370719781488955402,
 }
 
-# Optional: “Accepted” roles in HQ (not used here, but kept for future)
+# Optional: “Accepted” roles in HQ (kept for future)
 ACCEPTED_PLATFORM_ROLES = {
     "PS4":    1367753287872286720,
     "PS5":    1367753535839797278,
@@ -118,9 +118,7 @@ tree = bot.tree
 # -------------------------
 # In-memory stores
 # -------------------------
-# Per-user application session
-app_sessions: Dict[int, dict] = {}  # user_id -> {dept, subdept, platform, started_at, answers: [(q,a),...]}
-# Pending OAuth codes
+app_sessions: Dict[int, dict] = {}  # user_id -> {dept, subdept, platform, started_at, deadline, answers: [(q,a),...] }
 pending_codes: Dict[int, dict] = {} # user_id -> {code, timestamp, dept, platform, subdept}
 
 # -------------------------
@@ -142,48 +140,80 @@ def readable_remaining(deadline: float) -> str:
     return f"{m}m {s}s"
 
 # -------------------------
-# Question Sets
+# Question Sets (20 per department)
 # -------------------------
-# The first 4 questions are common to ALL depts.
+# First 4 common to ALL departments
 COMMON_4 = [
-    ("Q1", "What's your Discord username?"),
-    ("Q2", "How old are you IRL?"),
-    ("Q3", "What's your Date of Birth IRL?"),
-    ("Q4", "How did you find us? (type one): Instagram / Tiktok / Partnership / Friend / Other"),
+    ("Q1",  "What's your Discord username?"),
+    ("Q2",  "How old are you IRL?"),
+    ("Q3",  "What's your Date of Birth IRL?"),
+    ("Q4",  "How did you find us? (type one): Instagram / Tiktok / Partnership / Friend / Other"),
 ]
 
-# Department-specific additions (keep the important dept/roleplay questions)
-PSO_SPECIFIC = [
-    ("Q5", "What attracts you to **Public Safety** work within LSRP?"),
-    ("Q6", "Do you have prior law enforcement roleplay experience? If yes, where and what rank?"),
-    ("Q7", "Briefly explain the difference between **BCSO** and **SASP** jurisdictions."),
-    ("Q8", "Scenario: You arrive first on a shots-fired scene with civilians nearby. What's your immediate action plan?"),
-    ("Q9", "On a scale of 1-10, rate your radio discipline and explain your answer."),
-    ("Q10","Confirm you’ll follow all PSO SOPs and sub-department rules. (Yes/No and any comment)"),
+# PSO specifics (16 more)
+PSO_SPECIFIC_16 = [
+    ("Q5",  "What attracts you to Public Safety work within LSRP?"),
+    ("Q6",  "Do you have prior law enforcement RP experience? If yes, where and what rank?"),
+    ("Q7",  "Explain the difference between BCSO and SASP jurisdictions."),
+    ("Q8",  "Scenario: First on a shots-fired scene with civilians nearby. What’s your immediate plan?"),
+    ("Q9",  "Rate your radio discipline 1–10 and explain."),
+    ("Q10", "Confirm you’ll follow all PSO SOPs and sub-department rules. (Yes/No + any comments)"),
+    ("Q11", "List three traffic stop safety steps you always follow."),
+    ("Q12", "When should lethal force be considered appropriate?"),
+    ("Q13", "How do you de-escalate a hostile subject during a stop?"),
+    ("Q14", "Describe how you’d coordinate with another unit during a pursuit."),
+    ("Q15", "How do you handle chain of command disagreements in-session?"),
+    ("Q16", "What’s your approach to scene containment and perimeter setup?"),
+    ("Q17", "Name two examples of powergaming to avoid as LEO."),
+    ("Q18", "How do you balance realistic RP with server pacing?"),
+    ("Q19", "A fellow officer violates SOP mid-scene. What do you do?"),
+    ("Q20", "What’s your long-term goal inside PSO (training, supervision, specialty units)?"),
 ]
 
-CO_SPECIFIC = [
-    ("Q5", "What kind of civilian stories do you enjoy creating (legal/illegal/entrepreneur)?"),
-    ("Q6", "How do you avoid low-effort/chaotic RP while staying engaging for others?"),
-    ("Q7", "Describe a recent **creative** civilian scene you ran or would like to try here."),
-    ("Q8", "Are you comfortable with passive RP (dialogue, world-building) not centered on combat? Why?"),
-    ("Q9", "What conflicts do you think civilians should avoid initiating and why?"),
-    ("Q10","Confirm you’ll follow all CO guidelines. (Yes/No and any comment)"),
+# CO specifics (16 more)
+CO_SPECIFIC_16 = [
+    ("Q5",  "What kinds of civilian stories do you enjoy (legal/illegal/entrepreneur)?"),
+    ("Q6",  "How do you avoid low-effort/chaotic RP while staying engaging?"),
+    ("Q7",  "Describe a creative civilian scene you’ve run or want to run here."),
+    ("Q8",  "Are you comfortable with passive RP (dialogue/world-building)? Why?"),
+    ("Q9",  "What conflicts should civilians avoid initiating and why?"),
+    ("Q10", "Confirm you’ll follow all CO guidelines. (Yes/No + any comments)"),
+    ("Q11", "What’s your approach to building a civilian character background?"),
+    ("Q12", "How do you RP consequences after illegal activities?"),
+    ("Q13", "Give an example of non-violent conflict you’d like to portray."),
+    ("Q14", "How do you keep civilian RP fun for others on slow nights?"),
+    ("Q15", "Explain metagaming and how you avoid it as a civilian."),
+    ("Q16", "How do you signal intent OOC when coordination is needed (without breaking immersion)?"),
+    ("Q17", "What’s a good reason to call for emergency services from a civ POV?"),
+    ("Q18", "How will you use businesses or public locations to spark roleplay?"),
+    ("Q19", "What would make you step back and let another player lead a scene?"),
+    ("Q20", "Your long-term CO goals (gang mgmt, business owner, advisor, etc.)?"),
 ]
 
-SAFR_SPECIFIC = [
-    ("Q5", "Why do you want to join **San Andreas Fire & Rescue**?"),
-    ("Q6", "Any prior Fire/EMS RP? Certifications or knowledge you’d like to mention?"),
-    ("Q7", "Scenario: Multi-vehicle collision with fire and multiple injured. What are your first 3 priorities?"),
-    ("Q8", "Are you comfortable with medical RP steps (triage, basic life support)?"),
-    ("Q9", "What does teamwork mean to you in an emergency-services setting?"),
-    ("Q10","Confirm you’ll follow all SAFR protocols. (Yes/No and any comment)"),
+# SAFR specifics (16 more)
+SAFR_SPECIFIC_16 = [
+    ("Q5",  "Why do you want to join San Andreas Fire & Rescue?"),
+    ("Q6",  "Any prior Fire/EMS RP? Certifications or knowledge to share?"),
+    ("Q7",  "Scenario: Multi-vehicle collision with fire & multiple injured. First 3 priorities?"),
+    ("Q8",  "Are you comfortable with medical RP steps (triage, BLS)?"),
+    ("Q9",  "What does teamwork mean to you in emergency services?"),
+    ("Q10", "Confirm you’ll follow all SAFR protocols. (Yes/No + any comments)"),
+    ("Q11", "How do you assess scene safety before entering a structure?"),
+    ("Q12", "When would you call for additional alarms or mutual aid?"),
+    ("Q13", "Explain basic triage tags and how you’d apply them."),
+    ("Q14", "Describe the handoff to EMS or hospital in RP."),
+    ("Q15", "How do you communicate with LEO at a chaotic fire scene?"),
+    ("Q16", "What tools/equipment would you mention during a structure fire RP?"),
+    ("Q17", "How do you portray fatigue/limitations realistically in long scenes?"),
+    ("Q18", "What’s your approach to patient consent & refusal scenarios?"),
+    ("Q19", "How would you handle conflicting commands from multiple supervisors?"),
+    ("Q20", "Your long-term SAFR goals (EMS specialization, officer track, training)?"),
 ]
 
 DEPT_QUESTIONS = {
-    "PSO": COMMON_4 + PSO_SPECIFIC,
-    "CO":  COMMON_4 + CO_SPECIFIC,
-    "SAFR":COMMON_4 + SAFR_SPECIFIC,
+    "PSO":  COMMON_4 + PSO_SPECIFIC_16,
+    "CO":   COMMON_4 + CO_SPECIFIC_16,
+    "SAFR": COMMON_4 + SAFR_SPECIFIC_16,
 }
 
 # -------------------------
@@ -231,7 +261,7 @@ class DepartmentSelect(Select):
             )
             await dm.send(embed=intro)
 
-            # If PSO, ask sub-department; SAFR skips subdept → platform
+            # If PSO, ask sub-department; SAFR/CO skip subdept → platform
             if dept == "PSO":
                 await dm.send(
                     embed=Embed(
@@ -252,7 +282,6 @@ class DepartmentSelect(Select):
             # Assign applicant roles in HQ (where the panel lives)
             if interaction.guild and interaction.guild.id == HQ_GUILD_ID:
                 roles_to_add = []
-                plat_role = None  # will be added after platform selection
                 dept_role_id = APPLICANT_DEPT_ROLES.get(dept)
                 if dept_role_id:
                     r = interaction.guild.get_role(dept_role_id)
@@ -425,7 +454,7 @@ async def post_review(user: discord.User):
     answers: List[Tuple[str, str]] = sess.get("answers", [])
     color = dept_color(dept)
 
-    # Build review embed
+    # Build review embed (show full question text + full answer)
     desc_lines = [
         f"**Applicant:** {user.mention} (`{user.id}`)",
         f"**Department:** {dept}",
@@ -436,7 +465,10 @@ async def post_review(user: discord.User):
     ]
     for idx, (qt, ans) in enumerate(answers, start=1):
         desc_lines.append(f"**Q{idx}: {qt}**")
-        desc_lines.append(f"> {ans}\n")
+        # blockquote for multi-line readability
+        for line in ans.splitlines():
+            desc_lines.append(f"> {line}")
+        desc_lines.append("")
 
     review_embed = Embed(
         title="🗂️ New Application Submitted",
@@ -452,7 +484,7 @@ async def post_review(user: discord.User):
         return
 
     view = ReviewButtons(user_id=user.id, dept=dept, subdept=subdept, platform=platform)
-    msg = await ch.send(embed=review_embed, view=view)
+    await ch.send(embed=review_embed, view=view)
 
     # DM confirmation to applicant
     try:
@@ -487,7 +519,7 @@ class ReviewButtons(View):
             ephemeral=True
         )
 
-        # Notify applicant
+        # Notify applicant with GIF, code placeholder, link + button
         user = bot.get_user(self.user_id) or await bot.fetch_user(self.user_id)
         if user:
             try:
@@ -502,7 +534,6 @@ class ReviewButtons(View):
                     color=dept_color(self.dept)
                 )
                 e.set_image(url=ACCEPT_GIF_URL)
-                # Also include a button
                 view = View()
                 view.add_item(discord.ui.Button(label="Open Verification", url=REDIRECT_URI, style=discord.ButtonStyle.link))
                 await user.send(embed=e, view=view)
@@ -579,14 +610,13 @@ async def post_application_panel_prefix(ctx: commands.Context):
     if not any(r.id == STAFF_CAN_POST_PANEL_ROLE for r in getattr(ctx.author, "roles", [])):
         return await ctx.reply("🚫 You don’t have permission.")
     await post_panel(ctx.channel)
-    # delete the trigger message to keep the channel clean
     try:
         await ctx.message.delete()
     except Exception:
         pass
 
 # -------------------------
-# /auth_grant — generate 6-digit and DM
+# /auth_grant — generate 6-digit and DM (UNCHANGED)
 # -------------------------
 @tree.command(name="auth_grant", description="Generate a one-time 6-digit auth code (expires in 5 minutes).")
 @app_commands.describe(
@@ -842,7 +872,7 @@ def run_web():
 threading.Thread(target=run_web, daemon=True).start()
 
 # -------------------------
-# Anti-ping
+# Anti-ping (NO auto-delete of the warning message)
 # -------------------------
 @bot.event
 async def on_message(message: discord.Message):
@@ -861,17 +891,33 @@ async def on_message(message: discord.Message):
                     await message.delete()
                 except Exception:
                     pass
+                warn = (
+                    f"Naughty Naughty {message.author.mention}, please don't ping Dom2019og, "
+                    "he is a busy man but his DMs are always open.\n"
+                    "Pinging him again will result in a written warning. "
+                    "If you request help, please open a support ticket in "
+                    "https://discord.com/channels/1294319617539575808/1367056555035459606 ."
+                )
                 try:
-                    warn = (
-                        f"Naughty Naughty {message.author.mention}, please don't ping Dom2019og, "
-                        "he is a busy man but his DMs are always open.\n"
-                        "Pinging him again will result in a written warning. "
-                        "If you request help, please open a support ticket in "
-                        "https://discord.com/channels/1294319617539575808/1367056555035459606 ."
-                    )
-                    await message.channel.send(warn, delete_after=12)
+                    # NO delete_after — message stays
+                    await message.channel.send(warn)
                 except Exception:
                     pass
+
+# -------------------------
+# /jarvis — playful response (restricted to same staff role)
+# -------------------------
+@tree.command(name="jarvis", description="Ping Jarvis at a user (fun).")
+@app_commands.describe(target="Select the target user to address")
+async def jarvis_cmd(interaction: discord.Interaction, target: discord.Member):
+    if not any(r.id == STAFF_CAN_POST_PANEL_ROLE for r in interaction.user.roles):
+        return await interaction.response.send_message("🚫 You don’t have permission to use this.", ephemeral=True)
+    text = (
+        f"Greetings {target.mention}, it's Tony's Assistant, **JARVIS** here.\n"
+        "You have been selected as a test subject for the new **AIM-09 Inter-Continental Ballistic Missile**.\n"
+        "It's rapidly approaching, so I suggest you start packing. 🧳🚀"
+    )
+    await interaction.response.send_message(text)
 
 # -------------------------
 # Watchdog
@@ -946,4 +992,3 @@ if __name__ == "__main__":
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN is not set")
     bot.run(BOT_TOKEN)
-

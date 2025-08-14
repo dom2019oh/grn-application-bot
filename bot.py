@@ -42,6 +42,10 @@ PLATFORM_GUILDS = {
     "XboxOG": XBOX_OG_GUILD_ID,
 }
 
+# ----- Extra config for utility commands -----
+PRIORITY_LOG_CHANNEL_ID = int(os.getenv("PRIORITY_LOG_CHANNEL_ID", "0"))   # channel to log priority start/end
+SESSION_PING_ROLE_ID    = int(os.getenv("SESSION_PING_ROLE_ID", "0"))     # role to ping for sessions (optional)
+
 # Channels / Roles (HQ guild)
 PANEL_CHANNEL_ID          = 1324115220725108877
 APP_REVIEW_CHANNEL_ID     = 1366431401054048357
@@ -974,20 +978,178 @@ async def on_message(message: discord.Message):
                 except Exception:
                     pass
 
-# -------------------------
-# /jarvis — playful response (restricted to same staff role)
-# -------------------------
-@tree.command(name="jarvis", description="Ping Jarvis at a user (fun).")
-@app_commands.describe(target="Select the target user to address")
+# =========================
+# Utility / Fun / Ops Commands
+# =========================
+
+def _has_mgmt_perms(interaction: discord.Interaction) -> bool:
+    """Allow Management (per-guild) OR staff role you already use for panel/auth."""
+    mgmt_role_id = ANTI_PING_GUILDS.get(interaction.guild.id)  # Management Team role per guild
+    allowed = False
+    if isinstance(interaction.user, discord.Member):
+        user_roles = [r.id for r in interaction.user.roles]
+        if mgmt_role_id and mgmt_role_id in user_roles:
+            allowed = True
+        if STAFF_CAN_POST_PANEL_ROLE in user_roles:
+            allowed = True
+    return allowed
+
+
+# ---- /jarvis  ---------------------------------------------------------------
+@tree.command(name="jarvis", description="Have Jarvis deliver a friendly (totally not menacing) greeting.")
+@app_commands.describe(target="Who should Jarvis address?")
 async def jarvis_cmd(interaction: discord.Interaction, target: discord.Member):
-    if not any(r.id == STAFF_CAN_POST_PANEL_ROLE for r in interaction.user.roles):
-        return await interaction.response.send_message("🚫 You don’t have permission to use this.", ephemeral=True)
-    text = (
-        f"Greetings {target.mention}, it's Tony's Assistant, **JARVIS** here.\n"
-        "You have been selected as a test subject for the new **AIM-09 Inter-Continental Ballistic Missile**.\n"
-        "It's rapidly approaching, so I suggest you start packing. 🧳🚀"
+    if not _has_mgmt_perms(interaction):
+        return await interaction.response.send_message("🚫 You don’t have permission.", ephemeral=True)
+
+    await interaction.response.send_message(
+        f"Greetings {target.mention}, it's Tony's Assistant, **Jarvis** here. "
+        "You have been selected as a test subject for the new **AIM-09 Inter-Continental Ballistic Missile**. "
+        "It’s rapidly approaching, so I suggest you start packing. 💼🚀",
+        ephemeral=False
     )
-    await interaction.response.send_message(text)
+
+
+# ---- Priority controls ------------------------------------------------------
+active_priority: dict | None = None
+
+@tree.command(name="priority_start", description="Start a priority scene and log it.")
+@app_commands.describe(user="Who is involved", kind="Type of priority")
+@app_commands.choices(kind=[
+    app_commands.Choice(name="Shooting", value="Shooting"),
+    app_commands.Choice(name="Robbery", value="Robbery"),
+    app_commands.Choice(name="Pursuit", value="Pursuit"),
+    app_commands.Choice(name="Other", value="Other"),
+])
+async def priority_start(interaction: discord.Interaction, user: discord.Member, kind: app_commands.Choice[str]):
+    if not _has_mgmt_perms(interaction):
+        return await interaction.response.send_message("🚫 You don’t have permission.", ephemeral=True)
+    global active_priority
+    if active_priority:
+        return await interaction.response.send_message("⚠️ A priority is already active. End it first.", ephemeral=True)
+
+    active_priority = {
+        "user_id": user.id,
+        "kind": kind.value,
+        "started_by": interaction.user.id,
+        "ts": int(time.time())
+    }
+
+    embed = Embed(
+        title="🚨 Priority Started",
+        description=f"**User:** {user.mention}\n**Type:** {kind.value}\n**Time:** <t:{active_priority['ts']}:F>",
+        color=discord.Color.red()
+    )
+    await interaction.response.send_message("✅ Priority started.", ephemeral=True)
+
+    if PRIORITY_LOG_CHANNEL_ID:
+        ch = interaction.guild.get_channel(PRIORITY_LOG_CHANNEL_ID)
+        if ch:
+            await ch.send(embed=embed)
+
+@tree.command(name="priority_end", description="End the active priority and log it.")
+async def priority_end(interaction: discord.Interaction):
+    if not _has_mgmt_perms(interaction):
+        return await interaction.response.send_message("🚫 You don’t have permission.", ephemeral=True)
+    global active_priority
+    if not active_priority:
+        return await interaction.response.send_message("❌ No active priority.", ephemeral=True)
+
+    user = interaction.guild.get_member(active_priority["user_id"]) or interaction.user
+    embed = Embed(
+        title="✅ Priority Ended",
+        description=f"**User:** {user.mention}\n**Type:** {active_priority['kind']}\n**Ended:** <t:{int(time.time())}:F>",
+        color=discord.Color.green()
+    )
+    active_priority = None
+    await interaction.response.send_message("✅ Priority ended.", ephemeral=True)
+
+    if PRIORITY_LOG_CHANNEL_ID:
+        ch = interaction.guild.get_channel(PRIORITY_LOG_CHANNEL_ID)
+        if ch:
+            await ch.send(embed=embed)
+
+
+# ---- Session announce helpers ----------------------------------------------
+def _maybe_ping_session_role(guild: discord.Guild) -> str | None:
+    if not guild:
+        return None
+    if not SESSION_PING_ROLE_ID:
+        return None
+    r = guild.get_role(SESSION_PING_ROLE_ID)
+    return r.mention if r else None
+
+@tree.command(name="host_main_session", description="Announce Main Session with RSVP details.")
+@app_commands.describe(psn="Host PSN", date_time="When (e.g., Aug 15, 20:00 UTC)", session_type="Patrol, Heist, etc.", aop="Area of Play")
+async def host_main_session(interaction: discord.Interaction, psn: str, date_time: str, session_type: str, aop: str):
+    if not _has_mgmt_perms(interaction):
+        return await interaction.response.send_message("🚫 You don’t have permission.", ephemeral=True)
+
+    base_desc = (
+        f"**Los Santos Roleplay™ PlayStation |** `Main Session`\n\n"
+        "> *This message upholds all information regarding the upcoming roleplay session hosted by Los Santos Roleplay. "
+        "Please take your time to review the details below and if any questions arise, please ask the host of the session.*\n\n"
+        f"**PSN:** {psn}\n\n"
+        "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
+        "**Commencement Process.**\n"
+        "> *At the below time invites will begin being distributed. You will then be directed to your proper briefing channels. "
+        "We ask that you're to ensure you are connected to the Session Queue voice channel.*\n\n"
+        "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
+        "**Session Orientation**\n"
+        "> *Before the session begins, all individuals must be orientated accordingly. The orientation will happen after the invites are dispersed and you will be briefed by the highest-ranking official in terms of your department.*\n\n"
+        "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
+        "**Session Details.**\n"
+        f"**Start Time:** {date_time}\n"
+        f"• **Session Type:** {session_type}\n"
+        f"• **Area of Play:** {aop}\n"
+        "• [LSRPNetwork Guidelines](https://discord.com/channels/1324117813878718474/1375046710002319460/1395728361371861103) "
+        "• [Priority Guidelines](https://discord.com/channels/1324117813878718474/1399853866337566881) •"
+    )
+    embed = Embed(description=base_desc, color=discord.Color.blurple())
+
+    ping = _maybe_ping_session_role(interaction.guild)
+    await interaction.response.send_message(content=ping, embed=embed, ephemeral=False)
+
+@tree.command(name="start_session", description="Announce that the session is starting now.")
+@app_commands.describe(psn="Host PSN", aop="Area of Play")
+async def start_session(interaction: discord.Interaction, psn: str, aop: str):
+    if not _has_mgmt_perms(interaction):
+        return await interaction.response.send_message("🚫 You don’t have permission.", ephemeral=True)
+
+    embed = Embed(
+        title="🟢 SESSION START NOTICE",
+        description=(
+            "**The session is now officially starting!**\n\n"
+            f"📍 **Host PSN:** {psn}\n"
+            f"📍 **AOP:** {aop}\n"
+            f"🕒 **Start Time:** <t:{int(time.time())}:F>\n\n"
+            "🔊 **Please Ensure:**\n"
+            "• You are in correct RP attire.\n"
+            "• Your mic is working.\n"
+            "• You follow all RP & community guidelines.\n"
+            "• You join promptly to avoid being marked absent."
+        ),
+        color=discord.Color.green()
+    )
+    ping = _maybe_ping_session_role(interaction.guild)
+    await interaction.response.send_message(content=ping, embed=embed, ephemeral=False)
+
+@tree.command(name="end_session", description="Announce that the session has ended.")
+async def end_session(interaction: discord.Interaction):
+    if not _has_mgmt_perms(interaction):
+        return await interaction.response.send_message("🚫 You don’t have permission.", ephemeral=True)
+
+    embed = Embed(
+        title="🔴 SESSION CLOSED",
+        description=(
+            "**This session has now concluded.**\n\n"
+            f"🕒 **End Time:** <t:{int(time.time())}:F>\n\n"
+            "🙏 **Thank you to everyone who attended and maintained professionalism throughout the session.**"
+        ),
+        color=discord.Color.red()
+    )
+    ping = _maybe_ping_session_role(interaction.guild)
+    await interaction.response.send_message(content=ping, embed=embed, ephemeral=False)
 
 # -------------------------
 # Watchdog

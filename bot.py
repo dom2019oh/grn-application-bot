@@ -50,6 +50,7 @@ SESSION_PING_ROLE_ID    = int(os.getenv("SESSION_PING_ROLE_ID", "0"))     # role
 PANEL_CHANNEL_ID          = 1324115220725108877
 APP_REVIEW_CHANNEL_ID     = 1366431401054048357
 AUTH_CODE_LOG_CHANNEL     = 1395135616177668186
+APPLICATION_TIPS_CHANNEL  = 1370854351828029470  # #application-tips
 
 STAFF_CAN_POST_PANEL_ROLE = 1384558588478886022  # also permission to use /auth_grant
 
@@ -135,9 +136,6 @@ def dept_color(dept: str) -> discord.Color:
         return discord.Color.green()
     return discord.Color.red()  # SAFR
 
-def now_ts() -> int:
-    return int(time.time())
-
 def readable_remaining(deadline: float) -> str:
     left = max(0, int(deadline - time.time()))
     m, s = divmod(left, 60)
@@ -146,7 +144,6 @@ def readable_remaining(deadline: float) -> str:
 # -------------------------
 # Question Sets (20 per department)
 # -------------------------
-# First 4 common to ALL departments
 COMMON_4 = [
     ("Q1",  "What's your Discord username?"),
     ("Q2",  "How old are you IRL?"),
@@ -154,7 +151,6 @@ COMMON_4 = [
     ("Q4",  "How did you find us? (type one): Instagram / Tiktok / Partnership / Friend / Other"),
 ]
 
-# PSO specifics (16 more)
 PSO_SPECIFIC_16 = [
     ("Q5",  "What attracts you to Public Safety work within LSRP?"),
     ("Q6",  "Do you have prior law enforcement RP experience? If yes, where and what rank?"),
@@ -174,7 +170,6 @@ PSO_SPECIFIC_16 = [
     ("Q20", "What’s your long-term goal inside PSO (training, supervision, specialty units)?"),
 ]
 
-# CO specifics (16 more)
 CO_SPECIFIC_16 = [
     ("Q5",  "What kinds of civilian stories do you enjoy (legal/illegal/entrepreneur)?"),
     ("Q6",  "How do you avoid low-effort/chaotic RP while staying engaging?"),
@@ -194,7 +189,6 @@ CO_SPECIFIC_16 = [
     ("Q20", "Your long-term CO goals (gang mgmt, business owner, advisor, etc.)?"),
 ]
 
-# SAFR specifics (16 more)
 SAFR_SPECIFIC_16 = [
     ("Q5",  "Why do you want to join San Andreas Fire & Rescue?"),
     ("Q6",  "Any prior Fire/EMS RP? Certifications or knowledge to share?"),
@@ -469,7 +463,6 @@ async def post_review(user: discord.User):
     ]
     for idx, (qt, ans) in enumerate(answers, start=1):
         desc_lines.append(f"**Q{idx}: {qt}**")
-        # blockquote for multi-line readability
         for line in ans.splitlines():
             desc_lines.append(f"> {line}")
         desc_lines.append("")
@@ -504,6 +497,7 @@ async def post_review(user: discord.User):
     except Exception:
         pass
 
+# ---------- Review Buttons (Accept/Deny) ----------
 class ReviewButtons(View):
     def __init__(self, user_id: int, dept: str, subdept: str, platform: str):
         super().__init__(timeout=None)
@@ -514,21 +508,20 @@ class ReviewButtons(View):
 
     @discord.ui.button(label="✅ Accept", style=discord.ButtonStyle.success)
     async def accept(self, interaction: discord.Interaction, button: Button):
-        # only staff who can post the panel can accept/deny
         if not any(r.id == STAFF_CAN_POST_PANEL_ROLE for r in interaction.user.roles):
             return await interaction.response.send_message("🚫 You can’t accept applications.", ephemeral=True)
 
-        # 1) Ephemeral nudge to staff to run /auth_grant (so the real code+link are sent there)
+        # Staff nudge
         await interaction.response.send_message(
             f"✅ Accepted. Please run **/auth_grant** for <@{self.user_id}> "
             f"(Dept `{self.dept}` | Platform `{self.platform}`) to grant main server access.",
             ephemeral=True
         )
 
-        # 2) DM the applicant a *simple acceptance notice* (NO code or link here)
-        try:
-            user = bot.get_user(self.user_id) or await bot.fetch_user(self.user_id)
-            if user:
+        # Applicant DM (no link/code yet)
+        user = bot.get_user(self.user_id) or await bot.fetch_user(self.user_id)
+        if user:
+            try:
                 lines = []
                 lines.append(f"Congratulations! You’ve been **accepted** into **{self.dept}**.")
                 if self.dept == "PSO" and self.subdept and self.subdept != "N/A":
@@ -550,41 +543,8 @@ class ReviewButtons(View):
                     color=dept_color(self.dept)
                 )
                 await user.send(embed=e)
-        except Exception:
-            pass
-
-    @discord.ui.button(label="❌ Deny", style=discord.ButtonStyle.danger)
-    async def deny(self, interaction: discord.Interaction, button: Button):
-        if not any(r.id == STAFF_CAN_POST_PANEL_ROLE for r in interaction.user.roles):
-            return await interaction.response.send_message("🚫 You can’t deny applications.", ephemeral=True)
-
-        await interaction.response.send_message("❌ Application denied. Denied role applied (12h).", ephemeral=True)
-
-        # Add denied role in HQ
-        guild = bot.get_guild(HQ_GUILD_ID)
-        if guild:
-            try:
-                member = guild.get_member(self.user_id) or await guild.fetch_member(self.user_id)
-                role = guild.get_role(ROLE_DENIED_12H)
-                if role:
-                    await member.add_roles(role, reason="Application denied")
             except Exception:
                 pass
-
-        # Notify applicant
-        try:
-            user = bot.get_user(self.user_id) or await bot.fetch_user(self.user_id)
-            if user:
-                await user.send(embed=Embed(
-                    title="❌ Application Denied",
-                    description=(
-                        "Your application was reviewed and **denied** at this time.\n"
-                        "You may re-apply after the cooldown period. If you have questions, open a support ticket."
-                    ),
-                    color=discord.Color.red()
-                ))
-        except Exception:
-            pass
 
     @discord.ui.button(label="❌ Deny", style=discord.ButtonStyle.danger)
     async def deny(self, interaction: discord.Interaction, button: Button):
@@ -620,12 +580,11 @@ class ReviewButtons(View):
                 pass
 
 # -------------------------
-# Panel posting
+# Panel posting (new copy)
 # -------------------------
 async def post_panel(channel: discord.TextChannel):
-    tips_channel_mention = "<#1370854351828029470>"
+    tips_channel_mention = f"<#{APPLICATION_TIPS_CHANNEL}>"
 
-    # Top title + intro block
     title = "## 📥 Los Santos Roleplay Network™® — Applications."
     intro = (
         "**Hello prospective members!**\n\n"
@@ -718,7 +677,6 @@ async def auth_grant(
         return await interaction.response.send_message("🚫 You don’t have permission to use this.", ephemeral=True)
     await interaction.response.defer(ephemeral=True)
 
-    # Use the subdept from session if present (for PSO)
     subdept = app_sessions.get(user.id, {}).get("subdept", "N/A")
 
     code = random.randint(100000, 999999)
@@ -753,6 +711,7 @@ async def auth_grant(
             ),
             color=dept_color(department.value),
         )
+        e.set_image(url=ACCEPT_GIF_URL)
         view = View()
         view.add_item(discord.ui.Button(label="Open Verification", url=REDIRECT_URI, style=discord.ButtonStyle.link))
         await user.send(embed=e, view=view)
@@ -858,66 +817,69 @@ def oauth_handler():
         if target_guild_id == PS4_GUILD_ID:
             g = bot.get_guild(PS4_GUILD_ID)
             if g:
-                m = g.get_member(user_id) or asyncio.run_coroutine_threadsafe(g.fetch_member(user_id), bot.loop).result(timeout=10)
-                dept = pdata["dept"]
-                sub = pdata.get("subdept", "N/A")
+                fut = asyncio.run_coroutine_threadsafe(g.fetch_member(user_id), bot.loop)
+                m = g.get_member(user_id)
+                try:
+                    m = m or fut.result(timeout=10)
+                except Exception:
+                    m = g.get_member(user_id)
+                if m:
+                    dept = pdata["dept"]
+                    sub = pdata.get("subdept", "N/A")
+                    to_add = []
 
-                to_add = []
+                    if dept == "PSO":
+                        r_main = g.get_role(ROLE_PSO_MAIN)
+                        r_cat  = g.get_role(ROLE_PSO_CATEGORY)
+                        r_start= g.get_role(ROLE_PSO_STARTER)
+                        if r_main: to_add.append(r_main)
+                        if r_cat:  to_add.append(r_cat)
+                        if r_start:to_add.append(r_start)
+                        if sub == "SASP":
+                            r = g.get_role(ROLE_SASP)
+                            if r: to_add.append(r)
+                        elif sub == "BCSO":
+                            r = g.get_role(ROLE_BCSO)
+                            if r: to_add.append(r)
+                            rbc = g.get_role(ROLE_BCSO_CATEGORY)
+                            if rbc: to_add.append(rbc)
+                        cs = f"C-{random.randint(1000, 1999)} | {m.name}"
+                        try:
+                            asyncio.run_coroutine_threadsafe(m.edit(nick=cs, reason="Initial PSO callsign"), bot.loop).result(timeout=10)
+                        except Exception:
+                            pass
 
-                if dept == "PSO":
-                    # main + subdept + category + starter
-                    r_main = g.get_role(ROLE_PSO_MAIN)
-                    r_cat  = g.get_role(ROLE_PSO_CATEGORY)
-                    r_start= g.get_role(ROLE_PSO_STARTER)
-                    if r_main: to_add.append(r_main)
-                    if r_cat:  to_add.append(r_cat)
-                    if r_start:to_add.append(r_start)
-                    if sub == "SASP":
-                        r = g.get_role(ROLE_SASP)
-                        if r: to_add.append(r)
-                    elif sub == "BCSO":
-                        r = g.get_role(ROLE_BCSO)
-                        if r: to_add.append(r)
-                        rbc = g.get_role(ROLE_BCSO_CATEGORY)
-                        if rbc: to_add.append(rbc)
-                    # callsign
-                    cs = f"C-{random.randint(1000, 1999)} | {m.name}"
-                    try:
-                        asyncio.run_coroutine_threadsafe(m.edit(nick=cs, reason="Initial PSO callsign"), bot.loop).result(timeout=10)
-                    except Exception:
-                        pass
+                    elif dept == "CO":
+                        r_main = g.get_role(ROLE_CO_MAIN)
+                        r_cat  = g.get_role(ROLE_CO_CATEGORY)
+                        r_start= g.get_role(ROLE_CO_STARTER)
+                        if r_main: to_add.append(r_main)
+                        if r_cat:  to_add.append(r_cat)
+                        if r_start:to_add.append(r_start)
+                        cs = f"CIV-{random.randint(1000, 1999)} | {m.name}"
+                        try:
+                            asyncio.run_coroutine_threadsafe(m.edit(nick=cs, reason="Initial CO callsign"), bot.loop).result(timeout=10)
+                        except Exception:
+                            pass
 
-                elif dept == "CO":
-                    r_main = g.get_role(ROLE_CO_MAIN)
-                    r_cat  = g.get_role(ROLE_CO_CATEGORY)
-                    r_start= g.get_role(ROLE_CO_STARTER)
-                    if r_main: to_add.append(r_main)
-                    if r_cat:  to_add.append(r_cat)
-                    if r_start:to_add.append(r_start)
-                    cs = f"CIV-{random.randint(1000, 1999)} | {m.name}"
-                    try:
-                        asyncio.run_coroutine_threadsafe(m.edit(nick=cs, reason="Initial CO callsign"), bot.loop).result(timeout=10)
-                    except Exception:
-                        pass
+                    elif dept == "SAFR":
+                        r_main = g.get_role(ROLE_SAFR_MAIN)
+                        r_cat  = g.get_role(ROLE_SAFR_CATEGORY)
+                        r_start= g.get_role(ROLE_SAFR_STARTER)
+                        if r_main: to_add.append(r_main)
+                        if r_cat:  to_add.append(r_cat)
+                        if r_start:to_add.append(r_start)
+                        cs = f"FF-{random.randint(100, 999)} | {m.name}"
+                        try:
+                            asyncio.run_coroutine_threadsafe(m.edit(nick=cs, reason="Initial SAFR callsign"), bot.loop).result(timeout=10)
+                        except Exception:
+                            pass
 
-                elif dept == "SAFR":
-                    r_main = g.get_role(ROLE_SAFR_MAIN)
-                    r_cat  = g.get_role(ROLE_SAFR_CATEGORY)
-                    r_start= g.get_role(ROLE_SAFR_STARTER)
-                    if r_main: to_add.append(r_main)
-                    if r_cat:  to_add.append(r_cat)
-                    if r_start:to_add.append(r_start)
-                    cs = f"FF-{random.randint(100, 999)} | {m.name}"
-                    try:
-                        asyncio.run_coroutine_threadsafe(m.edit(nick=cs, reason="Initial SAFR callsign"), bot.loop).result(timeout=10)
-                    except Exception:
-                        pass
-
-                if to_add:
-                    try:
-                        asyncio.run_coroutine_threadsafe(m.add_roles(*to_add, reason="Initial dept roles"), bot.loop).result(timeout=10)
-                    except Exception:
-                        pass
+                    if to_add:
+                        try:
+                            asyncio.run_coroutine_threadsafe(m.add_roles(*to_add, reason="Initial dept roles"), bot.loop).result(timeout=10)
+                        except Exception:
+                            pass
     except Exception:
         pass
 
@@ -973,8 +935,7 @@ async def on_message(message: discord.Message):
                     "https://discord.com/channels/1294319617539575808/1367056555035459606 ."
                 )
                 try:
-                    # NO delete_after — message stays
-                    await message.channel.send(warn)
+                    await message.channel.send(warn)  # stays up
                 except Exception:
                     pass
 
@@ -983,8 +944,7 @@ async def on_message(message: discord.Message):
 # =========================
 
 def _has_mgmt_perms(interaction: discord.Interaction) -> bool:
-    """Allow Management (per-guild) OR staff role you already use for panel/auth."""
-    mgmt_role_id = ANTI_PING_GUILDS.get(interaction.guild.id)  # Management Team role per guild
+    mgmt_role_id = ANTI_PING_GUILDS.get(interaction.guild.id) if interaction.guild else None
     allowed = False
     if isinstance(interaction.user, discord.Member):
         user_roles = [r.id for r in interaction.user.roles]
@@ -994,8 +954,6 @@ def _has_mgmt_perms(interaction: discord.Interaction) -> bool:
             allowed = True
     return allowed
 
-
-# ---- /jarvis  ---------------------------------------------------------------
 @tree.command(name="jarvis", description="Have Jarvis deliver a friendly (totally not menacing) greeting.")
 @app_commands.describe(target="Who should Jarvis address?")
 async def jarvis_cmd(interaction: discord.Interaction, target: discord.Member):
@@ -1009,8 +967,7 @@ async def jarvis_cmd(interaction: discord.Interaction, target: discord.Member):
         ephemeral=False
     )
 
-
-# ---- Priority controls ------------------------------------------------------
+# ---- Priority controls ----
 active_priority: dict | None = None
 
 @tree.command(name="priority_start", description="Start a priority scene and log it.")
@@ -1069,8 +1026,7 @@ async def priority_end(interaction: discord.Interaction):
         if ch:
             await ch.send(embed=embed)
 
-
-# ---- Session announce helpers ----------------------------------------------
+# ---- Session announce helpers ----
 def _maybe_ping_session_role(guild: discord.Guild) -> str | None:
     if not guild:
         return None

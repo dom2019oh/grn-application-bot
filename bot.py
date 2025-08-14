@@ -510,35 +510,77 @@ class ReviewButtons(View):
 
     @discord.ui.button(label="✅ Accept", style=discord.ButtonStyle.success)
     async def accept(self, interaction: discord.Interaction, button: Button):
+        # only staff who can post the panel can accept/deny
         if not any(r.id == STAFF_CAN_POST_PANEL_ROLE for r in interaction.user.roles):
             return await interaction.response.send_message("🚫 You can’t accept applications.", ephemeral=True)
 
-        # Ping reminder to run /auth_grant
+        # 1) Ephemeral nudge to staff to run /auth_grant (so the real code+link are sent there)
         await interaction.response.send_message(
-            f"✅ Accepted. Please run **/auth_grant** for <@{self.user_id}> (Dept `{self.dept}` | Platform `{self.platform}`) to grant main server access.",
+            f"✅ Accepted. Please run **/auth_grant** for <@{self.user_id}> "
+            f"(Dept `{self.dept}` | Platform `{self.platform}`) to grant main server access.",
             ephemeral=True
         )
 
-        # Notify applicant with GIF, code placeholder, link + button
-        user = bot.get_user(self.user_id) or await bot.fetch_user(self.user_id)
-        if user:
-            try:
-                code_preview = "**This is your 1 time 6 digit code:** `xxxxxx`\n**Once this code is used in the authorization link it will no longer be valid.**"
+        # 2) DM the applicant a *simple acceptance notice* (NO code or link here)
+        try:
+            user = bot.get_user(self.user_id) or await bot.fetch_user(self.user_id)
+            if user:
+                lines = []
+                lines.append(f"Congratulations! You’ve been **accepted** into **{self.dept}**.")
+                if self.dept == "PSO" and self.subdept and self.subdept != "N/A":
+                    lines.append(f"Assigned sub-department: **{self.subdept}**.")
+                lines.append("")
+                lines.append("**Next steps**")
+                lines.append("• A staff member will issue you a **one-time 6-digit verification code** soon.")
+                lines.append("• The code comes from the bot via DM and **expires 5 minutes** after it is sent.")
+                lines.append("• Keep your DMs **open** and respond promptly. Do **not** share your code.")
+                lines.append("")
+                lines.append("**Expectations**")
+                lines.append("• Follow all community regulations and your department’s SOPs.")
+                lines.append("• Be respectful and maintain professional RP standards at all times.")
+                lines.append("• You’ll receive main server access right after you complete verification.")
+
                 e = Embed(
                     title="🎉 Application Accepted",
-                    description=(
-                        f"Congratulations! You’ve been **accepted** into **{self.dept}**.\n\n"
-                        f"{code_preview}\n\n"
-                        f"[Main Server Verification Link]({REDIRECT_URI})"
-                    ),
+                    description="\n".join(lines),
                     color=dept_color(self.dept)
                 )
-                e.set_image(url=ACCEPT_GIF_URL)
-                view = View()
-                view.add_item(discord.ui.Button(label="Open Verification", url=REDIRECT_URI, style=discord.ButtonStyle.link))
-                await user.send(embed=e, view=view)
+                await user.send(embed=e)
+        except Exception:
+            pass
+
+    @discord.ui.button(label="❌ Deny", style=discord.ButtonStyle.danger)
+    async def deny(self, interaction: discord.Interaction, button: Button):
+        if not any(r.id == STAFF_CAN_POST_PANEL_ROLE for r in interaction.user.roles):
+            return await interaction.response.send_message("🚫 You can’t deny applications.", ephemeral=True)
+
+        await interaction.response.send_message("❌ Application denied. Denied role applied (12h).", ephemeral=True)
+
+        # Add denied role in HQ
+        guild = bot.get_guild(HQ_GUILD_ID)
+        if guild:
+            try:
+                member = guild.get_member(self.user_id) or await guild.fetch_member(self.user_id)
+                role = guild.get_role(ROLE_DENIED_12H)
+                if role:
+                    await member.add_roles(role, reason="Application denied")
             except Exception:
                 pass
+
+        # Notify applicant
+        try:
+            user = bot.get_user(self.user_id) or await bot.fetch_user(self.user_id)
+            if user:
+                await user.send(embed=Embed(
+                    title="❌ Application Denied",
+                    description=(
+                        "Your application was reviewed and **denied** at this time.\n"
+                        "You may re-apply after the cooldown period. If you have questions, open a support ticket."
+                    ),
+                    color=discord.Color.red()
+                ))
+        except Exception:
+            pass
 
     @discord.ui.button(label="❌ Deny", style=discord.ButtonStyle.danger)
     async def deny(self, interaction: discord.Interaction, button: Button):

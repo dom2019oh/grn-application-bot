@@ -910,34 +910,7 @@ threading.Thread(target=run_web, daemon=True).start()
 # -------------------------
 # Anti-ping (NO auto-delete of the warning message)
 # -------------------------
-@bot.event
-async def on_message(message: discord.Message):
-    # Let commands run
-    await bot.process_commands(message)
 
-    if message.author.bot or not message.guild:
-        return
-
-    if PROTECTED_USER_ID in [u.id for u in message.mentions]:
-        mgmt_role_id = ANTI_PING_GUILDS.get(message.guild.id)
-        if mgmt_role_id:
-            has_immunity = any(r.id == mgmt_role_id for r in getattr(message.author, "roles", []))
-            if not has_immunity:
-                try:
-                    await message.delete()
-                except Exception:
-                    pass
-                warn = (
-                    f"Naughty Naughty {message.author.mention}, please don't ping Dom2019og, "
-                    "he is a busy man but his DMs are always open.\n"
-                    "Pinging him again will result in a written warning. "
-                    "If you request help, please open a support ticket in "
-                    "https://discord.com/channels/1294319617539575808/1367056555035459606 ."
-                )
-                try:
-                    await message.channel.send(warn)  # stays up
-                except Exception:
-                    pass
 
 # =========================
 # Utility / Fun / Ops Commands

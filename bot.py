@@ -1,9 +1,11 @@
 # =========================
 # LSRP Network System™®  — Application Core + Auth + Anti-ping + Jarvis
 # Focus build: application system + /auth_grant (UNCHANGED) + anti-ping + role/callsign on PS4 + /jarvis
+# Hardened: defers, persistent views, error logging, restart-safe Accept/Deny
 # =========================
 
 import os
+import sys
 import time
 import random
 import threading
@@ -13,6 +15,7 @@ from typing import Dict, List, Tuple
 import requests
 import urllib.parse
 
+import logging, traceback
 import discord
 from discord import app_commands, Embed, Object
 from discord.ext import commands, tasks
@@ -21,9 +24,29 @@ from discord.ui import View, Button, Select
 from flask import Flask, request, redirect, render_template_string
 
 # -------------------------
+# LOGGING (flush to Railway)
+# -------------------------
+def setup_logging():
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("[%(asctime)s] [%(levelname)8s] %(name)s: %(message)s"))
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+    logging.getLogger("discord").setLevel(logging.INFO)
+    logging.getLogger("discord.http").setLevel(logging.INFO)
+
+setup_logging()
+
+# -------------------------
 # ENV / CONSTANTS
 # -------------------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN is not set")
+
+# Owner (for DM error reporting if needed)
+OWNER_ID = 1176071547476262986
 
 # OAuth (already configured in your app)
 CLIENT_ID = os.getenv("CLIENT_ID") or "1397974568706117774"
@@ -141,6 +164,31 @@ def readable_remaining(deadline: float) -> str:
     m, s = divmod(left, 60)
     return f"{m}m {s}s"
 
+async def report_interaction_error(interaction: discord.Interaction, err: Exception, prefix: str):
+    # Console
+    logging.error("%s:\n%s", prefix, "".join(traceback.format_exception(type(err), err, err.__traceback__)))
+    # Ephemeral notice to clicker
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send("❌ An error occurred. Staff has been notified.", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ An error occurred. Staff has been notified.", ephemeral=True)
+    except Exception:
+        pass
+    # DM owner
+    try:
+        owner = bot.get_user(OWNER_ID) or await bot.fetch_user(OWNER_ID)
+        await owner.send(f"**{prefix}** in **{getattr(interaction.guild, 'name', 'DM')} / #{getattr(interaction.channel, 'name', '?')}**\n```\n{repr(err)}\n```")
+    except Exception:
+        pass
+    # Post in AUTH_CODE_LOG_CHANNEL if exists
+    try:
+        ch = bot.get_channel(AUTH_CODE_LOG_CHANNEL)
+        if ch:
+            await ch.send(f"**{prefix}**\n```\n{''.join(traceback.format_exception(type(err), err, err.__traceback__))[:1900]}\n```")
+    except Exception:
+        pass
+
 # -------------------------
 # Question Sets (20 per department)
 # -------------------------
@@ -215,6 +263,15 @@ DEPT_QUESTIONS = {
 }
 
 # -------------------------
+# Base View with error hook
+# -------------------------
+class SafeView(View):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+    async def on_error(self, error: Exception, item: discord.ui.Item, interaction: discord.Interaction) -> None:
+        await report_interaction_error(interaction, error, f"View error in '{getattr(item, 'custom_id', getattr(item, 'label', '?'))}'")
+
+# -------------------------
 # Application Panel (public)
 # -------------------------
 class DepartmentSelect(Select):
@@ -230,22 +287,25 @@ class DepartmentSelect(Select):
         )
 
     async def callback(self, interaction: discord.Interaction):
-        dept = self.values[0]
-        user = interaction.user
-
-        # Initialize session
-        app_sessions[user.id] = {
-            "dept": dept,
-            "guild_id": interaction.guild.id,
-            "answers": [],
-            "started_at": time.time(),
-            "deadline": time.time() + APP_TOTAL_TIME_SECONDS,
-        }
-
-        color = dept_color(dept)
-
-        # DM intro
         try:
+            # ACK fast to avoid "Interaction Failed"
+            await interaction.response.defer(ephemeral=True)
+
+            dept = self.values[0]
+            user = interaction.user
+
+            # Initialize session
+            app_sessions[user.id] = {
+                "dept": dept,
+                "guild_id": interaction.guild.id if interaction.guild else None,
+                "answers": [],
+                "started_at": time.time(),
+                "deadline": time.time() + APP_TOTAL_TIME_SECONDS,
+            }
+
+            color = dept_color(dept)
+
+            # DM intro
             dm = await user.create_dm()
             intro = Embed(
                 title="📋 Los Santos Roleplay Network™® | Application",
@@ -294,14 +354,19 @@ class DepartmentSelect(Select):
                     except Exception:
                         pass
 
-            await interaction.response.send_message("📬 I’ve sent you a DM to continue your application.", ephemeral=True)
+            await interaction.followup.send("📬 I’ve sent you a DM to continue your application.", ephemeral=True)
 
         except discord.Forbidden:
-            await interaction.response.send_message("⚠️ I couldn’t DM you. Please enable DMs and select again.", ephemeral=True)
+            if not interaction.response.is_done():
+                await interaction.response.send_message("⚠️ I couldn’t DM you. Please enable DMs and select again.", ephemeral=True)
+            else:
+                await interaction.followup.send("⚠️ I couldn’t DM you. Please enable DMs and select again.", ephemeral=True)
+        except Exception as e:
+            await report_interaction_error(interaction, e, "DepartmentSelect callback failed")
 
-class ApplicationPanel(View):
+class ApplicationPanel(SafeView):
     def __init__(self):
-        super().__init__(timeout=None)
+        super().__init__(timeout=None)  # persistent
         self.add_item(DepartmentSelect())
 
 class SubDeptSelect(Select):
@@ -378,12 +443,12 @@ class PlatformSelect(Select):
 
         await run_questions(interaction.user)
 
-class SubDeptView(View):
+class SubDeptView(SafeView):
     def __init__(self, user_id: int):
         super().__init__(timeout=300)
         self.add_item(SubDeptSelect(user_id))
 
-class PlatformView(View):
+class PlatformView(SafeView):
     def __init__(self, user_id: int):
         super().__init__(timeout=300)
         self.add_item(PlatformSelect(user_id))
@@ -471,7 +536,9 @@ async def post_review(user: discord.User):
         title="🗂️ New Application Submitted",
         description="\n".join(desc_lines),
         color=color
-    ).set_footer(text="Los Santos Roleplay Network™®")
+    )
+    # Store metadata in footer so buttons can recover after restarts
+    review_embed.set_footer(text=f"applicant:{user.id}|dept:{dept}|sub:{subdept}|platform:{platform}")
 
     guild = bot.get_guild(HQ_GUILD_ID)
     if not guild:
@@ -480,7 +547,7 @@ async def post_review(user: discord.User):
     if not ch:
         return
 
-    view = ReviewButtons(user_id=user.id, dept=dept, subdept=subdept, platform=platform)
+    view = ReviewButtonsPersistent()  # fixed custom_ids, persistent
     await ch.send(embed=review_embed, view=view)
 
     # DM confirmation to applicant
@@ -497,87 +564,126 @@ async def post_review(user: discord.User):
     except Exception:
         pass
 
-# ---------- Review Buttons (Accept/Deny) ----------
-class ReviewButtons(View):
-    def __init__(self, user_id: int, dept: str, subdept: str, platform: str):
-        super().__init__(timeout=None)
-        self.user_id = user_id
-        self.dept = dept
-        self.subdept = subdept
-        self.platform = platform
+# ---------- Review Buttons (Persistent & restart-safe) ----------
+# Fixed custom_ids so old messages keep working after bot restarts
+ACCEPT_ID = "review_accept"
+DENY_ID   = "review_deny"
 
-    @discord.ui.button(label="✅ Accept", style=discord.ButtonStyle.success)
+class ReviewButtonsPersistent(SafeView):
+    def __init__(self):
+        super().__init__(timeout=None)  # persistent
+
+    @discord.ui.button(label="✅ Accept", style=discord.ButtonStyle.success, custom_id=ACCEPT_ID)
     async def accept(self, interaction: discord.Interaction, button: Button):
-        if not any(r.id == STAFF_CAN_POST_PANEL_ROLE for r in interaction.user.roles):
-            return await interaction.response.send_message("🚫 You can’t accept applications.", ephemeral=True)
+        try:
+            # Restrict to staff
+            if not any(r.id == STAFF_CAN_POST_PANEL_ROLE for r in interaction.user.roles):
+                return await interaction.response.send_message("🚫 You can’t accept applications.", ephemeral=True)
 
-        # Staff nudge
-        await interaction.response.send_message(
-            f"✅ Accepted. Please run **/auth_grant** for <@{self.user_id}> "
-            f"(Dept `{self.dept}` | Platform `{self.platform}`) to grant main server access.",
-            ephemeral=True
-        )
+            # ACK fast
+            await interaction.response.defer(ephemeral=True)
 
-        # Applicant DM (no link/code yet)
-        user = bot.get_user(self.user_id) or await bot.fetch_user(self.user_id)
-        if user:
-            try:
-                lines = []
-                lines.append(f"Congratulations! You’ve been **accepted** into **{self.dept}**.")
-                if self.dept == "PSO" and self.subdept and self.subdept != "N/A":
-                    lines.append(f"Assigned sub-department: **{self.subdept}**.")
-                lines.append("")
-                lines.append("**Next steps**")
-                lines.append("• A staff member will issue you a **one-time 6-digit verification code** soon.")
-                lines.append("• The code comes from the bot via DM and **expires 5 minutes** after it is sent.")
-                lines.append("• Keep your DMs **open** and respond promptly. Do **not** share your code.")
-                lines.append("")
-                lines.append("**Expectations**")
-                lines.append("• Follow all community regulations and your department’s SOPs.")
-                lines.append("• Be respectful and maintain professional RP standards at all times.")
-                lines.append("• You’ll receive main server access right after you complete verification.")
+            # Parse metadata from embed footer
+            emb = interaction.message.embeds[0] if interaction.message.embeds else None
+            footer = emb.footer.text if emb and emb.footer and emb.footer.text else ""
+            # expected: applicant:ID|dept:PSO|sub:SASP|platform:PS4
+            meta = dict([pair.split(":", 1) for pair in footer.split("|") if ":" in pair])
+            user_id = int(meta.get("applicant", "0"))
+            dept    = meta.get("dept", "N/A")
+            subdept = meta.get("sub", "N/A")
+            platform= meta.get("platform", "N/A")
 
-                e = Embed(
-                    title="🎉 Application Accepted",
-                    description="\n".join(lines),
-                    color=dept_color(self.dept)
-                )
-                await user.send(embed=e)
-            except Exception:
-                pass
+            # Notify staffer what to do next
+            await interaction.followup.send(
+                f"✅ Accepted. Please run **/auth_grant** for <@{user_id}> "
+                f"(Dept `{dept}` | Platform `{platform}`) to grant main server access.",
+                ephemeral=True
+            )
 
-    @discord.ui.button(label="❌ Deny", style=discord.ButtonStyle.danger)
+            # DM applicant
+            user = bot.get_user(user_id) or await bot.fetch_user(user_id)
+            if user:
+                try:
+                    lines = []
+                    lines.append(f"Congratulations! You’ve been **accepted** into **{dept}**.")
+                    if dept == "PSO" and subdept and subdept != "N/A":
+                        lines.append(f"Assigned sub-department: **{subdept}**.")
+                    lines.append("")
+                    lines.append("**Next steps**")
+                    lines.append("• A staff member will issue you a **one-time 6-digit verification code** soon.")
+                    lines.append("• The code comes from the bot via DM and **expires 5 minutes** after it is sent.")
+                    lines.append("• Keep your DMs **open** and respond promptly. Do **not** share your code.")
+                    lines.append("")
+                    lines.append("**Expectations**")
+                    lines.append("• Follow all community regulations and your department’s SOPs.")
+                    lines.append("• Be respectful and maintain professional RP standards at all times.")
+                    lines.append("• You’ll receive main server access right after you complete verification.")
+
+                    e = Embed(
+                        title="🎉 Application Accepted",
+                        description="\n".join(lines),
+                        color=dept_color(dept)
+                    )
+                    await user.send(embed=e)
+                except Exception:
+                    pass
+
+            # Disable buttons on the original staff message
+            for child in self.children:
+                child.disabled = True
+            await interaction.message.edit(view=self)
+
+        except Exception as e:
+            await report_interaction_error(interaction, e, "Accept button failed")
+
+    @discord.ui.button(label="❌ Deny", style=discord.ButtonStyle.danger, custom_id=DENY_ID)
     async def deny(self, interaction: discord.Interaction, button: Button):
-        if not any(r.id == STAFF_CAN_POST_PANEL_ROLE for r in interaction.user.roles):
-            return await interaction.response.send_message("🚫 You can’t deny applications.", ephemeral=True)
+        try:
+            if not any(r.id == STAFF_CAN_POST_PANEL_ROLE for r in interaction.user.roles):
+                return await interaction.response.send_message("🚫 You can’t deny applications.", ephemeral=True)
 
-        await interaction.response.send_message("❌ Application denied. Denied role applied (12h).", ephemeral=True)
+            await interaction.response.defer(ephemeral=True)
 
-        # Add denied role in HQ
-        guild = bot.get_guild(HQ_GUILD_ID)
-        if guild:
-            try:
-                member = guild.get_member(self.user_id) or await guild.fetch_member(self.user_id)
-                role = guild.get_role(ROLE_DENIED_12H)
-                if role:
-                    await member.add_roles(role, reason="Application denied")
-            except Exception:
-                pass
+            emb = interaction.message.embeds[0] if interaction.message.embeds else None
+            footer = emb.footer.text if emb and emb.footer and emb.footer.text else ""
+            meta = dict([pair.split(":", 1) for pair in footer.split("|") if ":" in pair])
+            user_id = int(meta.get("applicant", "0"))
 
-        # Notify applicant
-        user = bot.get_user(self.user_id) or await bot.fetch_user(self.user_id)
-        if user:
-            try:
-                await user.send(embed=Embed(
-                    title="❌ Application Denied",
-                    description=(
-                        "Your application was reviewed and **denied** at this time.\n"
-                        "You may re-apply after the cooldown period. If you have questions, open a support ticket."
-                    ),
-                    color=discord.Color.red()
-                ))
-            except Exception:
-                pass
+            await interaction.followup.send("❌ Application denied. Denied role applied (12h).", ephemeral=True)
+
+            # Add denied role in HQ
+            guild = bot.get_guild(HQ_GUILD_ID)
+            if guild:
+                try:
+                    member = guild.get_member(user_id) or await guild.fetch_member(user_id)
+                    role = guild.get_role(ROLE_DENIED_12H)
+                    if role:
+                        await member.add_roles(role, reason="Application denied")
+                except Exception:
+                    pass
+
+            # Notify applicant
+            user = bot.get_user(user_id) or await bot.fetch_user(user_id)
+            if user:
+                try:
+                    await user.send(embed=Embed(
+                        title="❌ Application Denied",
+                        description=(
+                            "Your application was reviewed and **denied** at this time.\n"
+                            "You may re-apply after the cooldown period. If you have questions, open a support ticket."
+                        ),
+                        color=discord.Color.red()
+                    ))
+                except Exception:
+                    pass
+
+            # Disable buttons
+            for child in self.children:
+                child.disabled = True
+            await interaction.message.edit(view=self)
+
+        except Exception as e:
+            await report_interaction_error(interaction, e, "Deny button failed")
 
 # -------------------------
 # Panel posting (new copy)
@@ -628,13 +734,16 @@ async def post_panel(channel: discord.TextChannel):
 
 @tree.command(name="post_application_panel", description="Post the permanent application panel in the current channel.")
 async def post_application_panel_slash(interaction: discord.Interaction):
-    if interaction.guild is None:
-        return await interaction.response.send_message("Use this inside the target channel.", ephemeral=True)
-    if not any(r.id == STAFF_CAN_POST_PANEL_ROLE for r in interaction.user.roles):
-        return await interaction.response.send_message("🚫 You don’t have permission.", ephemeral=True)
-    await interaction.response.defer(ephemeral=True)
-    await post_panel(interaction.channel)
-    await interaction.followup.send("✅ Panel posted here.", ephemeral=True)
+    try:
+        if interaction.guild is None:
+            return await interaction.response.send_message("Use this inside the target channel.", ephemeral=True)
+        if not any(r.id == STAFF_CAN_POST_PANEL_ROLE for r in interaction.user.roles):
+            return await interaction.response.send_message("🚫 You don’t have permission.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        await post_panel(interaction.channel)
+        await interaction.followup.send("✅ Panel posted here.", ephemeral=True)
+    except Exception as e:
+        await report_interaction_error(interaction, e, "post_application_panel failed")
 
 @bot.command(name="?post_application_panel")
 async def post_application_panel_prefix(ctx: commands.Context):
@@ -673,52 +782,55 @@ async def auth_grant(
     department: app_commands.Choice[str],
     platform: app_commands.Choice[str]
 ):
-    if not any(r.id == STAFF_CAN_POST_PANEL_ROLE for r in interaction.user.roles):
-        return await interaction.response.send_message("🚫 You don’t have permission to use this.", ephemeral=True)
-    await interaction.response.defer(ephemeral=True)
-
-    subdept = app_sessions.get(user.id, {}).get("subdept", "N/A")
-
-    code = random.randint(100000, 999999)
-    pending_codes[user.id] = {
-        "code": code,
-        "timestamp": time.time(),
-        "dept": department.value,
-        "platform": platform.value,
-        "subdept": subdept,
-    }
-
-    # Log to HQ
-    hq = bot.get_guild(HQ_GUILD_ID)
-    log_ch = hq.get_channel(AUTH_CODE_LOG_CHANNEL) if hq else None
-    if log_ch:
-        await log_ch.send(
-            f"🔐 **Auth Code Generated**\n"
-            f"User: {user.mention} (`{user.id}`)\n"
-            f"Department: `{department.value}`  |  Platform: `{platform.value}`  |  Subdept: `{subdept}`\n"
-            f"Code: **{code}** (expires in 5 minutes)\n"
-            f"Granted by: {interaction.user.mention}"
-        )
-
-    # DM applicant (code + link + button)
     try:
-        e = Embed(
-            title="🔐 Los Santos Roleplay Network™® — Authorization",
-            description=(
-                f"**This is your 1 time 6 digit code:** `{code}`\n"
-                f"**Once this code is used in the authorization link it will no longer be valid.**\n\n"
-                f"[Main Server Verification Link]({REDIRECT_URI})"
-            ),
-            color=dept_color(department.value),
-        )
-        e.set_image(url=ACCEPT_GIF_URL)
-        view = View()
-        view.add_item(discord.ui.Button(label="Open Verification", url=REDIRECT_URI, style=discord.ButtonStyle.link))
-        await user.send(embed=e, view=view)
-    except Exception:
-        pass
+        if not any(r.id == STAFF_CAN_POST_PANEL_ROLE for r in interaction.user.roles):
+            return await interaction.response.send_message("🚫 You don’t have permission to use this.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
 
-    await interaction.followup.send(f"✅ Code sent to {user.mention}'s DMs.", ephemeral=True)
+        subdept = app_sessions.get(user.id, {}).get("subdept", "N/A")
+
+        code = random.randint(100000, 999999)
+        pending_codes[user.id] = {
+            "code": code,
+            "timestamp": time.time(),
+            "dept": department.value,
+            "platform": platform.value,
+            "subdept": subdept,
+        }
+
+        # Log to HQ
+        hq = bot.get_guild(HQ_GUILD_ID)
+        log_ch = hq.get_channel(AUTH_CODE_LOG_CHANNEL) if hq else None
+        if log_ch:
+            await log_ch.send(
+                f"🔐 **Auth Code Generated**\n"
+                f"User: {user.mention} (`{user.id}`)\n"
+                f"Department: `{department.value}`  |  Platform: `{platform.value}`  |  Subdept: `{subdept}`\n"
+                f"Code: **{code}** (expires in 5 minutes)\n"
+                f"Granted by: {interaction.user.mention}"
+            )
+
+        # DM applicant (code + link + button)
+        try:
+            e = Embed(
+                title="🔐 Los Santos Roleplay Network™® — Authorization",
+                description=(
+                    f"**This is your 1 time 6 digit code:** `{code}`\n"
+                    f"**Once this code is used in the authorization link it will no longer be valid.**\n\n"
+                    f"[Main Server Verification Link]({REDIRECT_URI})"
+                ),
+                color=dept_color(department.value),
+            )
+            e.set_image(url=ACCEPT_GIF_URL)
+            view = SafeView()
+            view.add_item(discord.ui.Button(label="Open Verification", url=REDIRECT_URI, style=discord.ButtonStyle.link))
+            await user.send(embed=e, view=view)
+        except Exception:
+            pass
+
+        await interaction.followup.send(f"✅ Code sent to {user.mention}'s DMs.", ephemeral=True)
+    except Exception as e:
+        await report_interaction_error(interaction, e, "auth_grant failed")
 
 # -------------------------
 # OAuth mini web server
@@ -905,12 +1017,8 @@ def run_web():
     port = int(os.environ.get("PORT", "8080"))
     flask_app.run(host="0.0.0.0", port=port)
 
+flask_app = Flask(__name__)
 threading.Thread(target=run_web, daemon=True).start()
-
-# -------------------------
-# Anti-ping (NO auto-delete of the warning message)
-# -------------------------
-
 
 # =========================
 # Utility / Fun / Ops Commands
@@ -930,15 +1038,17 @@ def _has_mgmt_perms(interaction: discord.Interaction) -> bool:
 @tree.command(name="jarvis", description="Have Jarvis deliver a friendly (totally not menacing) greeting.")
 @app_commands.describe(target="Who should Jarvis address?")
 async def jarvis_cmd(interaction: discord.Interaction, target: discord.Member):
-    if not _has_mgmt_perms(interaction):
-        return await interaction.response.send_message("🚫 You don’t have permission.", ephemeral=True)
-
-    await interaction.response.send_message(
-        f"Greetings {target.mention}, it's Tony's Assistant, **Jarvis** here. "
-        "You have been selected as a test subject for the new **AIM-09 Inter-Continental Ballistic Missile**. "
-        "It’s rapidly approaching, so I suggest you start packing. 💼🚀",
-        ephemeral=False
-    )
+    try:
+        if not _has_mgmt_perms(interaction):
+            return await interaction.response.send_message("🚫 You don’t have permission.", ephemeral=True)
+        await interaction.response.send_message(
+            f"Greetings {target.mention}, it's Tony's Assistant, **Jarvis** here. "
+            "You have been selected as a test subject for the new **AIM-09 Inter-Continental Ballistic Missile**. "
+            "It’s rapidly approaching, so I suggest you start packing. 💼🚀",
+            ephemeral=False
+        )
+    except Exception as e:
+        await report_interaction_error(interaction, e, "jarvis_cmd failed")
 
 # ---- Priority controls ----
 active_priority: dict | None = None
@@ -952,52 +1062,58 @@ active_priority: dict | None = None
     app_commands.Choice(name="Other", value="Other"),
 ])
 async def priority_start(interaction: discord.Interaction, user: discord.Member, kind: app_commands.Choice[str]):
-    if not _has_mgmt_perms(interaction):
-        return await interaction.response.send_message("🚫 You don’t have permission.", ephemeral=True)
-    global active_priority
-    if active_priority:
-        return await interaction.response.send_message("⚠️ A priority is already active. End it first.", ephemeral=True)
+    try:
+        if not _has_mgmt_perms(interaction):
+            return await interaction.response.send_message("🚫 You don’t have permission.", ephemeral=True)
+        global active_priority
+        if active_priority:
+            return await interaction.response.send_message("⚠️ A priority is already active. End it first.", ephemeral=True)
 
-    active_priority = {
-        "user_id": user.id,
-        "kind": kind.value,
-        "started_by": interaction.user.id,
-        "ts": int(time.time())
-    }
+        active_priority = {
+            "user_id": user.id,
+            "kind": kind.value,
+            "started_by": interaction.user.id,
+            "ts": int(time.time())
+        }
 
-    embed = Embed(
-        title="🚨 Priority Started",
-        description=f"**User:** {user.mention}\n**Type:** {kind.value}\n**Time:** <t:{active_priority['ts']}:F>",
-        color=discord.Color.red()
-    )
-    await interaction.response.send_message("✅ Priority started.", ephemeral=True)
+        embed = Embed(
+            title="🚨 Priority Started",
+            description=f"**User:** {user.mention}\n**Type:** {kind.value}\n**Time:** <t:{active_priority['ts']}:F>",
+            color=discord.Color.red()
+        )
+        await interaction.response.send_message("✅ Priority started.", ephemeral=True)
 
-    if PRIORITY_LOG_CHANNEL_ID:
-        ch = interaction.guild.get_channel(PRIORITY_LOG_CHANNEL_ID)
-        if ch:
-            await ch.send(embed=embed)
+        if PRIORITY_LOG_CHANNEL_ID:
+            ch = interaction.guild.get_channel(PRIORITY_LOG_CHANNEL_ID)
+            if ch:
+                await ch.send(embed=embed)
+    except Exception as e:
+        await report_interaction_error(interaction, e, "priority_start failed")
 
 @tree.command(name="priority_end", description="End the active priority and log it.")
 async def priority_end(interaction: discord.Interaction):
-    if not _has_mgmt_perms(interaction):
-        return await interaction.response.send_message("🚫 You don’t have permission.", ephemeral=True)
-    global active_priority
-    if not active_priority:
-        return await interaction.response.send_message("❌ No active priority.", ephemeral=True)
+    try:
+        if not _has_mgmt_perms(interaction):
+            return await interaction.response.send_message("🚫 You don’t have permission.", ephemeral=True)
+        global active_priority
+        if not active_priority:
+            return await interaction.response.send_message("❌ No active priority.", ephemeral=True)
 
-    user = interaction.guild.get_member(active_priority["user_id"]) or interaction.user
-    embed = Embed(
-        title="✅ Priority Ended",
-        description=f"**User:** {user.mention}\n**Type:** {active_priority['kind']}\n**Ended:** <t:{int(time.time())}:F>",
-        color=discord.Color.green()
-    )
-    active_priority = None
-    await interaction.response.send_message("✅ Priority ended.", ephemeral=True)
+        user = interaction.guild.get_member(active_priority["user_id"]) or interaction.user
+        embed = Embed(
+            title="✅ Priority Ended",
+            description=f"**User:** {user.mention}\n**Type:** {active_priority['kind']}\n**Ended:** <t:{int(time.time())}:F>",
+            color=discord.Color.green()
+        )
+        active_priority = None
+        await interaction.response.send_message("✅ Priority ended.", ephemeral=True)
 
-    if PRIORITY_LOG_CHANNEL_ID:
-        ch = interaction.guild.get_channel(PRIORITY_LOG_CHANNEL_ID)
-        if ch:
-            await ch.send(embed=embed)
+        if PRIORITY_LOG_CHANNEL_ID:
+            ch = interaction.guild.get_channel(PRIORITY_LOG_CHANNEL_ID)
+            if ch:
+                await ch.send(embed=embed)
+    except Exception as e:
+        await report_interaction_error(interaction, e, "priority_end failed")
 
 # ---- Session announce helpers ----
 def _maybe_ping_session_role(guild: discord.Guild) -> str | None:
@@ -1011,74 +1127,83 @@ def _maybe_ping_session_role(guild: discord.Guild) -> str | None:
 @tree.command(name="host_main_session", description="Announce Main Session with RSVP details.")
 @app_commands.describe(psn="Host PSN", date_time="When (e.g., Aug 15, 20:00 UTC)", session_type="Patrol, Heist, etc.", aop="Area of Play")
 async def host_main_session(interaction: discord.Interaction, psn: str, date_time: str, session_type: str, aop: str):
-    if not _has_mgmt_perms(interaction):
-        return await interaction.response.send_message("🚫 You don’t have permission.", ephemeral=True)
+    try:
+        if not _has_mgmt_perms(interaction):
+            return await interaction.response.send_message("🚫 You don’t have permission.", ephemeral=True)
 
-    base_desc = (
-        f"**Los Santos Roleplay™ PlayStation |** `Main Session`\n\n"
-        "> *This message upholds all information regarding the upcoming roleplay session hosted by Los Santos Roleplay. "
-        "Please take your time to review the details below and if any questions arise, please ask the host of the session.*\n\n"
-        f"**PSN:** {psn}\n\n"
-        "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
-        "**Commencement Process.**\n"
-        "> *At the below time invites will begin being distributed. You will then be directed to your proper briefing channels. "
-        "We ask that you're to ensure you are connected to the Session Queue voice channel.*\n\n"
-        "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
-        "**Session Orientation**\n"
-        "> *Before the session begins, all individuals must be orientated accordingly. The orientation will happen after the invites are dispersed and you will be briefed by the highest-ranking official in terms of your department.*\n\n"
-        "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
-        "**Session Details.**\n"
-        f"**Start Time:** {date_time}\n"
-        f"• **Session Type:** {session_type}\n"
-        f"• **Area of Play:** {aop}\n"
-        "• [LSRPNetwork Guidelines](https://discord.com/channels/1324117813878718474/1375046710002319460/1395728361371861103) "
-        "• [Priority Guidelines](https://discord.com/channels/1324117813878718474/1399853866337566881) •"
-    )
-    embed = Embed(description=base_desc, color=discord.Color.blurple())
+        base_desc = (
+            f"**Los Santos Roleplay™ PlayStation |** `Main Session`\n\n"
+            "> *This message upholds all information regarding the upcoming roleplay session hosted by Los Santos Roleplay. "
+            "Please take your time to review the details below and if any questions arise, please ask the host of the session.*\n\n"
+            f"**PSN:** {psn}\n\n"
+            "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
+            "**Commencement Process.**\n"
+            "> *At the below time invites will begin being distributed. You will then be directed to your proper briefing channels. "
+            "We ask that you're to ensure you are connected to the Session Queue voice channel.*\n\n"
+            "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
+            "**Session Orientation**\n"
+            "> *Before the session begins, all individuals must be orientated accordingly. The orientation will happen after the invites are dispersed and you will be briefed by the highest-ranking official in terms of your department.*\n\n"
+            "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
+            "**Session Details.**\n"
+            f"**Start Time:** {date_time}\n"
+            f"• **Session Type:** {session_type}\n"
+            f"• **Area of Play:** {aop}\n"
+            "• [LSRPNetwork Guidelines](https://discord.com/channels/1324117813878718474/1375046710002319460/1395728361371861103) "
+            "• [Priority Guidelines](https://discord.com/channels/1324117813878718474/1399853866337566881) •"
+        )
+        embed = Embed(description=base_desc, color=discord.Color.blurple())
 
-    ping = _maybe_ping_session_role(interaction.guild)
-    await interaction.response.send_message(content=ping, embed=embed, ephemeral=False)
+        ping = _maybe_ping_session_role(interaction.guild)
+        await interaction.response.send_message(content=ping, embed=embed, ephemeral=False)
+    except Exception as e:
+        await report_interaction_error(interaction, e, "host_main_session failed")
 
 @tree.command(name="start_session", description="Announce that the session is starting now.")
 @app_commands.describe(psn="Host PSN", aop="Area of Play")
 async def start_session(interaction: discord.Interaction, psn: str, aop: str):
-    if not _has_mgmt_perms(interaction):
-        return await interaction.response.send_message("🚫 You don’t have permission.", ephemeral=True)
+    try:
+        if not _has_mgmt_perms(interaction):
+            return await interaction.response.send_message("🚫 You don’t have permission.", ephemeral=True)
 
-    embed = Embed(
-        title="🟢 SESSION START NOTICE",
-        description=(
-            "**The session is now officially starting!**\n\n"
-            f"📍 **Host PSN:** {psn}\n"
-            f"📍 **AOP:** {aop}\n"
-            f"🕒 **Start Time:** <t:{int(time.time())}:F>\n\n"
-            "🔊 **Please Ensure:**\n"
-            "• You are in correct RP attire.\n"
-            "• Your mic is working.\n"
-            "• You follow all RP & community guidelines.\n"
-            "• You join promptly to avoid being marked absent."
-        ),
-        color=discord.Color.green()
-    )
-    ping = _maybe_ping_session_role(interaction.guild)
-    await interaction.response.send_message(content=ping, embed=embed, ephemeral=False)
+        embed = Embed(
+            title="🟢 SESSION START NOTICE",
+            description=(
+                "**The session is now officially starting!**\n\n"
+                f"📍 **Host PSN:** {psn}\n"
+                f"📍 **AOP:** {aop}\n"
+                f"🕒 **Start Time:** <t:{int(time.time())}:F>\n\n"
+                "🔊 **Please Ensure:**\n"
+                "• You are in correct RP attire.\n"
+                "• Your mic is working.\n"
+                "• You follow all RP & community guidelines.\n"
+                "• You join promptly to avoid being marked absent."
+            ),
+            color=discord.Color.green()
+        )
+        ping = _maybe_ping_session_role(interaction.guild)
+        await interaction.response.send_message(content=ping, embed=embed, ephemeral=False)
+    except Exception as e:
+        await report_interaction_error(interaction, e, "start_session failed")
 
 @tree.command(name="end_session", description="Announce that the session has ended.")
 async def end_session(interaction: discord.Interaction):
-    if not _has_mgmt_perms(interaction):
-        return await interaction.response.send_message("🚫 You don’t have permission.", ephemeral=True)
+    try:
+        if not _has_mgmt_perms(interaction):
+            return await interaction.response.send_message("🚫 You don’t have permission.", ephemeral=True)
 
-    embed = Embed(
-        title="🔴 SESSION CLOSED",
-        description=(
-            "**This session has now concluded.**\n\n"
-            f"🕒 **End Time:** <t:{int(time.time())}:F>\n\n"
-            "🙏 **Thank you to everyone who attended and maintained professionalism throughout the session.**"
-        ),
-        color=discord.Color.red()
-    )
-    ping = _maybe_ping_session_role(interaction.guild)
-    await interaction.response.send_message(content=ping, embed=embed, ephemeral=False)
+        embed = Embed(
+            title="🔴 SESSION CLOSED",
+            description=(
+                "**This session has now concluded.**\n\n"
+                f"🕒 **End Time:** <t:{int(time.time())}:F>\n\n"
+                "🙏 **Thank you to everyone who attended and maintained professionalism throughout the session.**"
+            ),
+            color=discord.Color.red()
+        )
+        ping = _maybe_ping_session_role(interaction.guild)
+        await interaction.response.send_message(content=ping, embed=embed, ephemeral=False)
+    except Exception as e:
+        await report_interaction_error(interaction, e, "end_session failed")
 
 # -------------------------
 # Watchdog
@@ -1103,28 +1228,36 @@ async def before_watchdog():
     await bot.wait_until_ready()
 
 # -------------------------
-# on_ready — sync + autopost panel
+# Global command error hook
+# -------------------------
+@tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    await report_interaction_error(interaction, error, "Slash command error")
+
+# -------------------------
+# on_ready — sync + register persistent views + autopost panel
 # -------------------------
 @bot.event
 async def on_ready():
-    # persist view
     try:
+        # Register persistent views (must have fixed custom_id)
         bot.add_view(ApplicationPanel())
-    except Exception:
-        pass
+        bot.add_view(ReviewButtonsPersistent())
+    except Exception as e:
+        logging.error("add_view error: %s", e)
 
     # quick HQ sync + global sync
     try:
         hq_synced = await tree.sync(guild=Object(id=HQ_GUILD_ID))
-        print(f"✅ Synced {len(hq_synced)} commands to HQ guild {HQ_GUILD_ID}")
+        logging.info("✅ Synced %d commands to HQ guild %s", len(hq_synced), HQ_GUILD_ID)
     except Exception as e:
-        print(f"⚠️ HQ sync error: {e}")
+        logging.error("⚠️ HQ sync error: %s", e)
 
     try:
         global_synced = await tree.sync()
-        print(f"🌍 Pushed {len(global_synced)} commands globally")
+        logging.info("🌍 Pushed %d commands globally", len(global_synced))
     except Exception as e:
-        print(f"⚠️ Global sync error: {e}")
+        logging.error("⚠️ Global sync error: %s", e)
 
     if not watchdog.is_running():
         watchdog.start()
@@ -1140,16 +1273,15 @@ async def on_ready():
                         break
                 else:
                     await post_panel(ch)
-                    print(f"✅ Application panel posted in #{ch.name}")
+                    logging.info("✅ Application panel posted in #%s", getattr(ch, "name", "?"))
     except Exception as e:
-        print(f"⚠️ Could not autopost panel: {e}")
+        logging.error("⚠️ Could not autopost panel: %s", e)
 
-    print(f"🟢 Bot is online as {bot.user}")
+    logging.info("🟢 Bot is online as %s", bot.user)
 
 # -------------------------
 # Run
 # -------------------------
 if __name__ == "__main__":
-    if not BOT_TOKEN:
-        raise RuntimeError("BOT_TOKEN is not set")
+    # Tip: in Railway variables, set PYTHONUNBUFFERED=1 for real-time logs
     bot.run(BOT_TOKEN)

@@ -1199,6 +1199,57 @@ def _maybe_ping_session_role(guild: discord.Guild) -> str | None:
     r = guild.get_role(SESSION_PING_ROLE_ID)
     return r.mention if r else None
 
+class RSVPView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.attending: list[int] = []
+        self.not_attending: list[int] = []
+        self.late: list[int] = []
+
+    async def _update_embed(self, interaction: discord.Interaction):
+        embed = interaction.message.embeds[0]
+        lines = embed.description.split("▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬")
+        # Keep the original session info intact
+        session_info = "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬".join(lines[:3])  
+
+        attending_list = "\n".join([f"<@{uid}>" for uid in self.attending]) or "_"
+        not_list = "\n".join([f"<@{uid}>" for uid in self.not_attending]) or "_"
+        late_list = "\n".join([f"<@{uid}>" for uid in self.late]) or "_"
+
+        rsvp_section = (
+            f"✅ Attending ({len(self.attending)}/24)\n{attending_list}\n\n"
+            f"❌ Not Attending ({len(self.not_attending)})\n{not_list}\n\n"
+            f"⏰ Late ({len(self.late)})\n{late_list}"
+        )
+
+        embed.description = session_info + "\n▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n" + rsvp_section
+        await interaction.message.edit(embed=embed, view=self)
+        await interaction.response.defer()
+
+    @discord.ui.button(label="✅ Attending", style=discord.ButtonStyle.success)
+    async def attending_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self._remove_user(interaction.user.id)
+        self.attending.append(interaction.user.id)
+        await self._update_embed(interaction)
+
+    @discord.ui.button(label="❌ Not Attending", style=discord.ButtonStyle.danger)
+    async def not_attending_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self._remove_user(interaction.user.id)
+        self.not_attending.append(interaction.user.id)
+        await self._update_embed(interaction)
+
+    @discord.ui.button(label="⏰ Late", style=discord.ButtonStyle.secondary)
+    async def late_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self._remove_user(interaction.user.id)
+        self.late.append(interaction.user.id)
+        await self._update_embed(interaction)
+
+    def _remove_user(self, user_id: int):
+        if user_id in self.attending: self.attending.remove(user_id)
+        if user_id in self.not_attending: self.not_attending.remove(user_id)
+        if user_id in self.late: self.late.remove(user_id)
+
+
 @tree.command(name="host_main_session", description="Announce Main Session with RSVP details.")
 @app_commands.describe(psn="Host PSN", date_time="When (e.g., Aug 15, 20:00 UTC)", session_type="Patrol, Heist, etc.", aop="Area of Play")
 async def host_main_session(interaction: discord.Interaction, psn: str, date_time: str, session_type: str, aop: str):
@@ -1224,12 +1275,14 @@ async def host_main_session(interaction: discord.Interaction, psn: str, date_tim
             f"• **Session Type:** {session_type}\n"
             f"• **Area of Play:** {aop}\n"
             "• [LSRPNetwork Guidelines](https://discord.com/channels/1324117813878718474/1375046710002319460/1395728361371861103) "
-            "• [Priority Guidelines](https://discord.com/channels/1324117813878718474/1399853866337566881) •"
+            "• [Priority Guidelines](https://discord.com/channels/1324117813878718474/1399853866337566881) •\n\n"
+            "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
+            "✅ Attending (0/24)\n_\n\n❌ Not Attending (0)\n_\n\n⏰ Late (0)\n_"
         )
         embed = Embed(description=base_desc, color=discord.Color.blurple())
 
         ping = _maybe_ping_session_role(interaction.guild)
-        await interaction.response.send_message(content=ping, embed=embed, ephemeral=False)
+        await interaction.response.send_message(content=ping, embed=embed, view=RSVPView())
     except Exception as e:
         await report_interaction_error(interaction, e, "host_main_session failed")
 

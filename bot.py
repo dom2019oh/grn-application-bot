@@ -1,1287 +1,1500 @@
-# =========================
-# LSRP Network System™®  — Application Core + Auth + Anti-ping + Jarvis
-# Focus build: application system + /auth_grant (UNCHANGED) + anti-ping + role/callsign on PS4 + /jarvis
-# Hardened: defers, persistent views, error logging, restart-safe Accept/Deny
-# =========================
-
-import os
-import sys
-import time
-import random
-import threading
-import asyncio
-from typing import Dict, List, Tuple
-
-import requests
-import urllib.parse
-
-import logging, traceback
-import discord
-from discord import app_commands, Embed, Object
-from discord.ext import commands, tasks
-from discord.ui import View, Button, Select
-
-from flask import Flask, request, redirect, render_template_string
-
-# -------------------------
-# LOGGING (flush to Railway)
-# -------------------------
-def setup_logging():
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(logging.Formatter("[%(asctime)s] [%(levelname)8s] %(name)s: %(message)s"))
-    root = logging.getLogger()
-    root.handlers.clear()
-    root.addHandler(handler)
-    root.setLevel(logging.INFO)
-    logging.getLogger("discord").setLevel(logging.INFO)
-    logging.getLogger("discord.http").setLevel(logging.INFO)
-
-setup_logging()
-
-# -------------------------
-# ENV / CONSTANTS
-# -------------------------
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN is not set")
-
-# Owner (for DM error reporting if needed)
-OWNER_ID = 1176071547476262986
-
-# OAuth (already configured in your app)
-CLIENT_ID = os.getenv("CLIENT_ID") or "1397974568706117774"
-CLIENT_SECRET = os.getenv("CLIENT_SECRET") or "KcaapGwCEsH_JDlIbrAX3lghSC-tDREN"
-REDIRECT_URI = os.getenv("REDIRECT_URI", "https://lsrpnetwork-verification.up.railway.app/auth")
-
-# Guilds
-HQ_GUILD_ID      = int(os.getenv("HQ_GUILD_ID", "1294319617539575808"))
-PS4_GUILD_ID     = int(os.getenv("PS4_GUILD_ID", "1324117813878718474"))
-PS5_GUILD_ID     = int(os.getenv("PS5_GUILD_ID", "1401903156274790441"))
-XBOX_OG_GUILD_ID = int(os.getenv("XBOX_OG_GUILD_ID", "1375494043831898334"))
-
-PLATFORM_GUILDS = {
-    "PS4":    PS4_GUILD_ID,
-    "PS5":    PS5_GUILD_ID,
-    "XboxOG": XBOX_OG_GUILD_ID,
-}
-
-# ----- Extra config for utility commands -----
-PRIORITY_LOG_CHANNEL_ID = int(os.getenv("PRIORITY_LOG_CHANNEL_ID", "0"))   # channel to log priority start/end
-SESSION_PING_ROLE_ID    = int(os.getenv("SESSION_PING_ROLE_ID", "0"))     # role to ping for sessions (optional)
-
-# Channels / Roles (HQ guild)
-PANEL_CHANNEL_ID          = 1324115220725108877
-APP_REVIEW_CHANNEL_ID     = 1366431401054048357
-AUTH_CODE_LOG_CHANNEL     = 1395135616177668186
-APPLICATION_TIPS_CHANNEL  = 1370854351828029470  # #application-tips
-
-STAFF_CAN_POST_PANEL_ROLE = 1384558588478886022  # also permission to use /auth_grant
-
-ROLE_DENIED_12H           = 1323755533492027474  # "Denied Member (12 hours)"
-ROLE_PENDING              = 1323758692918624366  # "Application Pending"
-
-# HQ applicant roles
-APPLICANT_PLATFORM_ROLES = {
-    "PS4":    1401961522556698739,
-    "PS5":    1401961758502944900,
-    "XboxOG": 1401961991756578817,
-}
-APPLICANT_DEPT_ROLES = {
-    "PSO":  1370719624051691580,
-    "CO":   1323758149009936424,
-    "SAFR": 1370719781488955402,
-}
-
-# Optional: “Accepted” roles in HQ (kept for future)
-ACCEPTED_PLATFORM_ROLES = {
-    "PS4":    1367753287872286720,
-    "PS5":    1367753535839797278,
-    "XboxOG": 1367753756367912960,
-}
-
-# Anti-ping settings
-PROTECTED_USER_ID = 1176071547476262986  # you
-ANTI_PING_GUILDS = {
-    HQ_GUILD_ID: 1338855588381200426,     # HQ Management Team
-    PS4_GUILD_ID: 1375046488194809917,    # PS4 Management Team
-}
-
-# Application timing
-APP_TOTAL_TIME_SECONDS = 35 * 60   # 35 minutes overall timer
-CODE_TTL_SECONDS       = 5 * 60    # 5 minutes code TTL
-
-# Application panel imagery
-PANEL_IMAGE_URL = "https://cdn.discordapp.com/attachments/1317589676336611381/1405147584456032276/Sunset_Photography_Tumblr_Banner.png?ex=689dc52a&is=689c73aa&hm=f7fd9a078016e1fc61d54391e5d57bf61f0c1f6b09e82b8163b16eae312c0f1a&"
-ACCEPT_GIF_URL  = "https://cdn.discordapp.com/attachments/1317589676336611381/1402368709783191713/Animated_LSRP.gif?ex=689d8c63&is=689c3ae3&hm=5cd9a2cff01d151238b2fd245a8128ada27122b5f4d7d1d2214332c0324dd3fb&"
-
-# PS4 main guild dept + starter rank roles (on successful OAuth join)
-# PSO sub-department roles
-ROLE_PSO_MAIN            = 1375046521904431124
-ROLE_SASP                = 1401347813958226061
-ROLE_BCSO                = 1401347339796348938
-ROLE_PSO_CATEGORY        = 1404575562290434190         # “Public Safety Rank(s)”
-ROLE_BCSO_CATEGORY       = 1375046520469979256         # “Sheriffs Office Rank(s)”
-ROLE_PSO_STARTER         = 1375046543329202186         # Cadet
-
-# CO roles
-ROLE_CO_MAIN             = 1375046547678429195
-ROLE_CO_CATEGORY         = 1375046548747980830         # “Civilian Operations Rank(s)”
-ROLE_CO_STARTER          = 1375046566150406155         # Probationary Civ
-
-# SAFR roles
-ROLE_SAFR_MAIN           = 1401347818873946133
-ROLE_SAFR_CATEGORY       = 1375046571653201961         # “Fire/EMS Rank(s)”
-ROLE_SAFR_STARTER        = 1375046583153856634         # Probationary Firefighter
-
-# -------------------------
-# Discord Bot Setup
-# -------------------------
-intents = discord.Intents.default()
-intents.members = True
-intents.message_content = True
-
-bot = commands.Bot(command_prefix="!", intents=intents)
-tree = bot.tree
-
-# -------------------------
-# In-memory stores
-# -------------------------
-app_sessions: Dict[int, dict] = {}  # user_id -> {dept, subdept, platform, started_at, deadline, answers: [(q,a),...] }
-pending_codes: Dict[int, dict] = {} # user_id -> {code, timestamp, dept, platform, subdept}
-
-# -------------------------
-# Helpers
-# -------------------------
-def dept_color(dept: str) -> discord.Color:
-    if dept == "PSO":
-        return discord.Color.blue()
-    if dept == "CO":
-        return discord.Color.green()
-    return discord.Color.red()  # SAFR
-
-def readable_remaining(deadline: float) -> str:
-    left = max(0, int(deadline - time.time()))
-    m, s = divmod(left, 60)
-    return f"{m}m {s}s"
-
-async def report_interaction_error(interaction: discord.Interaction, err: Exception, prefix: str):
-    # Console
-    logging.error("%s:\n%s", prefix, "".join(traceback.format_exception(type(err), err, err.__traceback__)))
-    # Ephemeral notice to clicker
-    try:
-        if interaction.response.is_done():
-            await interaction.followup.send("❌ An error occurred. Staff has been notified.", ephemeral=True)
-        else:
-            await interaction.response.send_message("❌ An error occurred. Staff has been notified.", ephemeral=True)
-    except Exception:
-        pass
-    # DM owner
-    try:
-        owner = bot.get_user(OWNER_ID) or await bot.fetch_user(OWNER_ID)
-        await owner.send(f"**{prefix}** in **{getattr(interaction.guild, 'name', 'DM')} / #{getattr(interaction.channel, 'name', '?')}**\n```\n{repr(err)}\n```")
-    except Exception:
-        pass
-    # Post in AUTH_CODE_LOG_CHANNEL if exists
-    try:
-        ch = bot.get_channel(AUTH_CODE_LOG_CHANNEL)
-        if ch:
-            await ch.send(f"**{prefix}**\n```\n{''.join(traceback.format_exception(type(err), err, err.__traceback__))[:1900]}\n```")
-    except Exception:
-        pass
-
-# -------------------------
-# Question Sets (20 per department)
-# -------------------------
-COMMON_4 = [
-    ("Q1",  "What's your Discord username?"),
-    ("Q2",  "How old are you IRL?"),
-    ("Q3",  "What's your Date of Birth IRL?"),
-    ("Q4",  "How did you find us? (type one): Instagram / Tiktok / Partnership / Friend / Other"),
-]
-
-PSO_SPECIFIC_16 = [
-    ("Q5",  "What attracts you to Public Safety work within LSRP?"),
-    ("Q6",  "Do you have prior law enforcement RP experience? If yes, where and what rank?"),
-    ("Q7",  "Explain the difference between BCSO and SASP jurisdictions."),
-    ("Q8",  "Scenario: First on a shots-fired scene with civilians nearby. What’s your immediate plan?"),
-    ("Q9",  "Rate your radio discipline 1–10 and explain."),
-    ("Q10", "Confirm you’ll follow all PSO SOPs and sub-department rules. (Yes/No + any comments)"),
-    ("Q11", "List three traffic stop safety steps you always follow."),
-    ("Q12", "When should lethal force be considered appropriate?"),
-    ("Q13", "How do you de-escalate a hostile subject during a stop?"),
-    ("Q14", "Describe how you’d coordinate with another unit during a pursuit."),
-    ("Q15", "How do you handle chain of command disagreements in-session?"),
-    ("Q16", "What’s your approach to scene containment and perimeter setup?"),
-    ("Q17", "Name two examples of powergaming to avoid as LEO."),
-    ("Q18", "How do you balance realistic RP with server pacing?"),
-    ("Q19", "A fellow officer violates SOP mid-scene. What do you do?"),
-    ("Q20", "What’s your long-term goal inside PSO (training, supervision, specialty units)?"),
-]
-
-CO_SPECIFIC_16 = [
-    ("Q5",  "What kinds of civilian stories do you enjoy (legal/illegal/entrepreneur)?"),
-    ("Q6",  "How do you avoid low-effort/chaotic RP while staying engaging?"),
-    ("Q7",  "Describe a creative civilian scene you’ve run or want to run here."),
-    ("Q8",  "Are you comfortable with passive RP (dialogue/world-building)? Why?"),
-    ("Q9",  "What conflicts should civilians avoid initiating and why?"),
-    ("Q10", "Confirm you’ll follow all CO guidelines. (Yes/No + any comments)"),
-    ("Q11", "What’s your approach to building a civilian character background?"),
-    ("Q12", "How do you RP consequences after illegal activities?"),
-    ("Q13", "Give an example of non-violent conflict you’d like to portray."),
-    ("Q14", "How do you keep civilian RP fun for others on slow nights?"),
-    ("Q15", "Explain metagaming and how you avoid it as a civilian."),
-    ("Q16", "How do you signal intent OOC when coordination is needed (without breaking immersion)?"),
-    ("Q17", "What’s a good reason to call for emergency services from a civ POV?"),
-    ("Q18", "How will you use businesses or public locations to spark roleplay?"),
-    ("Q19", "What would make you step back and let another player lead a scene?"),
-    ("Q20", "Your long-term CO goals (gang mgmt, business owner, advisor, etc.)?"),
-]
-
-SAFR_SPECIFIC_16 = [
-    ("Q5",  "Why do you want to join San Andreas Fire & Rescue?"),
-    ("Q6",  "Any prior Fire/EMS RP? Certifications or knowledge to share?"),
-    ("Q7",  "Scenario: Multi-vehicle collision with fire & multiple injured. First 3 priorities?"),
-    ("Q8",  "Are you comfortable with medical RP steps (triage, BLS)?"),
-    ("Q9",  "What does teamwork mean to you in emergency services?"),
-    ("Q10", "Confirm you’ll follow all SAFR protocols. (Yes/No + any comments)"),
-    ("Q11", "How do you assess scene safety before entering a structure?"),
-    ("Q12", "When would you call for additional alarms or mutual aid?"),
-    ("Q13", "Explain basic triage tags and how you’d apply them."),
-    ("Q14", "Describe the handoff to EMS or hospital in RP."),
-    ("Q15", "How do you communicate with LEO at a chaotic fire scene?"),
-    ("Q16", "What tools/equipment would you mention during a structure fire RP?"),
-    ("Q17", "How do you portray fatigue/limitations realistically in long scenes?"),
-    ("Q18", "What’s your approach to patient consent & refusal scenarios?"),
-    ("Q19", "How would you handle conflicting commands from multiple supervisors?"),
-    ("Q20", "Your long-term SAFR goals (EMS specialization, officer track, training)?"),
-]
-
-DEPT_QUESTIONS = {
-    "PSO":  COMMON_4 + PSO_SPECIFIC_16,
-    "CO":   COMMON_4 + CO_SPECIFIC_16,
-    "SAFR": COMMON_4 + SAFR_SPECIFIC_16,
-}
-
-# -------------------------
-# Base View with error hook
-# -------------------------
-class SafeView(View):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-    async def on_error(self, error: Exception, item: discord.ui.Item, interaction: discord.Interaction) -> None:
-        await report_interaction_error(interaction, error, f"View error in '{getattr(item, 'custom_id', getattr(item, 'label', '?'))}'")
-
-# -------------------------
-# Application Panel (public)
-# -------------------------
-class DepartmentSelect(Select):
-    def __init__(self):
-        super().__init__(
-            placeholder="Select a department to begin…",
-            min_values=1, max_values=1,
-            options=[
-                discord.SelectOption(label="Public Safety Office (PSO)", value="PSO", description="BCSO / SASP"),
-                discord.SelectOption(label="Civilian Operations (CO)", value="CO", description="Civilian Roleplay"),
-                discord.SelectOption(label="San Andreas Fire & Rescue (SAFR)", value="SAFR", description="Fire & EMS"),
-            ],
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        try:
-            # ACK fast to avoid "Interaction Failed"
-            await interaction.response.defer(ephemeral=True)
-
-            dept = self.values[0]
-            user = interaction.user
-
-            # Initialize session
-            app_sessions[user.id] = {
-                "dept": dept,
-                "guild_id": interaction.guild.id if interaction.guild else None,
-                "answers": [],
-                "started_at": time.time(),
-                "deadline": time.time() + APP_TOTAL_TIME_SECONDS,
-            }
-
-            color = dept_color(dept)
-
-            # DM intro
-            dm = await user.create_dm()
-            intro = Embed(
-                title="📋 Los Santos Roleplay Network™® | Application",
-                description=(
-                    f"Department selected: **{dept}**\n\n"
-                    "I’ll guide you through the application here in DMs.\n"
-                    f"⏳ You have **35 minutes** to complete all questions.\n"
-                    "If your DMs are closed, please enable them and select again."
-                ),
-                color=color,
-            )
-            await dm.send(embed=intro)
-
-            # If PSO, ask sub-department; SAFR/CO skip subdept → platform
-            if dept == "PSO":
-                await dm.send(
-                    embed=Embed(
-                        title="Sub-Department Selection",
-                        description="Choose your **PSO** sub-department:",
-                        color=color),
-                    view=SubDeptView(user.id)
-                )
-            else:
-                await dm.send(
-                    embed=Embed(
-                        title="Platform Selection",
-                        description="Choose your platform:",
-                        color=color),
-                    view=PlatformView(user.id)
-                )
-
-            # Assign applicant roles in HQ (where the panel lives)
-            if interaction.guild and interaction.guild.id == HQ_GUILD_ID:
-                roles_to_add = []
-                dept_role_id = APPLICANT_DEPT_ROLES.get(dept)
-                if dept_role_id:
-                    r = interaction.guild.get_role(dept_role_id)
-                    if r: roles_to_add.append(r)
-                pending_role = interaction.guild.get_role(ROLE_PENDING)
-                if pending_role:
-                    roles_to_add.append(pending_role)
-                member = interaction.guild.get_member(user.id) or await interaction.guild.fetch_member(user.id)
-                if roles_to_add:
-                    try:
-                        await member.add_roles(*roles_to_add, reason="Application started")
-                    except Exception:
-                        pass
-
-            await interaction.followup.send("📬 I’ve sent you a DM to continue your application.", ephemeral=True)
-
-        except discord.Forbidden:
-            if not interaction.response.is_done():
-                await interaction.response.send_message("⚠️ I couldn’t DM you. Please enable DMs and select again.", ephemeral=True)
-            else:
-                await interaction.followup.send("⚠️ I couldn’t DM you. Please enable DMs and select again.", ephemeral=True)
-        except Exception as e:
-            await report_interaction_error(interaction, e, "DepartmentSelect callback failed")
-
-class ApplicationPanel(SafeView):
-    def __init__(self):
-        super().__init__(timeout=None)  # persistent
-        self.add_item(DepartmentSelect())
-
-class SubDeptSelect(Select):
-    def __init__(self, user_id: int):
-        super().__init__(
-            placeholder="Select sub-department…",
-            min_values=1, max_values=1,
-            options=[
-                discord.SelectOption(label="Blaine County Sheriff's Office (BCSO)", value="BCSO"),
-                discord.SelectOption(label="San Andreas State Police (SASP)", value="SASP"),
-            ],
-        )
-        self.user_id = user_id
-
-    async def callback(self, interaction: discord.Interaction):
-        if interaction.user.id != self.user_id:
-            return await interaction.response.send_message("This menu isn’t for you.", ephemeral=True)
-        sess = app_sessions.setdefault(self.user_id, {})
-        sess["subdept"] = self.values[0]
-        dept = sess.get("dept", "PSO")
-        color = dept_color(dept)
-        emb = Embed(title="Platform Selection", description="Choose your platform:", color=color)
-        await interaction.response.edit_message(embed=emb, view=PlatformView(self.user_id))
-
-class PlatformSelect(Select):
-    def __init__(self, user_id: int):
-        super().__init__(
-            placeholder="Select platform…",
-            min_values=1, max_values=1,
-            options=[
-                discord.SelectOption(label="PlayStation 4", value="PS4"),
-                discord.SelectOption(label="PlayStation 5", value="PS5"),
-                discord.SelectOption(label="Xbox Old Gen", value="XboxOG"),
-            ],
-        )
-        self.user_id = user_id
-
-    async def callback(self, interaction: discord.Interaction):
-        if interaction.user.id != self.user_id:
-            return await interaction.response.send_message("This menu isn’t for you.", ephemeral=True)
-
-        sess = app_sessions.setdefault(self.user_id, {})
-        sess["platform"] = self.values[0]
-        dept = sess.get("dept", "CO")
-        color = dept_color(dept)
-
-        # Add platform applicant role in HQ (if panel came from HQ)
-        if sess.get("guild_id") == HQ_GUILD_ID:
-            guild = bot.get_guild(HQ_GUILD_ID)
-            if guild:
-                member = guild.get_member(self.user_id) or await guild.fetch_member(self.user_id)
-                plat_role_id = APPLICANT_PLATFORM_ROLES.get(sess["platform"])
-                roles_to_add = []
-                if plat_role_id:
-                    r = guild.get_role(plat_role_id)
-                    if r: roles_to_add.append(r)
-                if roles_to_add:
-                    try:
-                        await member.add_roles(*roles_to_add, reason="Application started (platform selected)")
-                    except Exception:
-                        pass
-
-        # Start questions
-        emb = Embed(
-            title="Application Details Confirmed",
-            description=(f"**Department:** {dept}\n"
-                         f"**Sub-Department:** {sess.get('subdept', 'N/A')}\n"
-                         f"**Platform:** {sess['platform']}\n\n"
-                         f"✅ Selections saved. I’ll now begin your application questions.\n"
-                         f"⏳ Time left: **{readable_remaining(sess['deadline'])}**"),
-            color=color
-        )
-        await interaction.response.edit_message(embed=emb, view=None)
-
-        await run_questions(interaction.user)
-
-class SubDeptView(SafeView):
-    def __init__(self, user_id: int):
-        super().__init__(timeout=300)
-        self.add_item(SubDeptSelect(user_id))
-
-class PlatformView(SafeView):
-    def __init__(self, user_id: int):
-        super().__init__(timeout=300)
-        self.add_item(PlatformSelect(user_id))
-
-async def run_questions(user: discord.User):
-    """Walk the user through all questions in DM, enforce overall 35-min deadline, then post review."""
-    sess = app_sessions.get(user.id)
-    if not sess:
-        return
-    dept = sess["dept"]
-    questions = DEPT_QUESTIONS[dept]
-    deadline = sess["deadline"]
-    color = dept_color(dept)
-
-    dm = await user.create_dm()
-    for qkey, qtext in questions:
-        # Deadline check
-        if time.time() > deadline:
-            try:
-                await dm.send(embed=Embed(
-                    title="⏳ Time Expired",
-                    description="Your application time has expired (35 minutes). Please start again from the panel.",
-                    color=discord.Color.orange()
-                ))
-            except Exception:
-                pass
-            return
-
-        prompt = Embed(
-            title=f"{qkey}",
-            description=qtext + f"\n\n_Time remaining: **{readable_remaining(deadline)}**_",
-            color=color
-        )
-        await dm.send(embed=prompt)
-
-        def check(m: discord.Message):
-            return m.author.id == user.id and m.channel.id == dm.id
-
-        try:
-            # Allow up to remaining time for this question, max 5 minutes per Q
-            remaining = max(1, int(deadline - time.time()))
-            timeout = min(remaining, 300)
-            msg = await bot.wait_for("message", check=check, timeout=timeout)
-            sess["answers"].append((qtext, msg.content.strip()))
-        except asyncio.TimeoutError:
-            try:
-                await dm.send(embed=Embed(
-                    title="⏳ Time Expired",
-                    description="Your application timed out. Please start again from the panel.",
-                    color=discord.Color.orange()
-                ))
-            except Exception:
-                pass
-            return
-
-    # Done → post to review channel
-    await post_review(user)
-
-async def post_review(user: discord.User):
-    sess = app_sessions.get(user.id)
-    if not sess:
-        return
-    dept = sess["dept"]
-    subdept = sess.get("subdept", "N/A")
-    platform = sess.get("platform", "N/A")
-    answers: List[Tuple[str, str]] = sess.get("answers", [])
-    color = dept_color(dept)
-
-    # Build review embed (show full question text + full answer)
-    desc_lines = [
-        f"**Applicant:** {user.mention} (`{user.id}`)",
-        f"**Department:** {dept}",
-        f"**Sub-Department:** {subdept}",
-        f"**Platform:** {platform}",
-        "",
-        "**Application Responses:**",
-    ]
-    for idx, (qt, ans) in enumerate(answers, start=1):
-        desc_lines.append(f"**Q{idx}: {qt}**")
-        for line in ans.splitlines():
-            desc_lines.append(f"> {line}")
-        desc_lines.append("")
-
-    review_embed = Embed(
-        title="🗂️ New Application Submitted",
-        description="\n".join(desc_lines),
-        color=color
-    )
-    # Store metadata in footer so buttons can recover after restarts
-    review_embed.set_footer(text=f"applicant:{user.id}|dept:{dept}|sub:{subdept}|platform:{platform}")
-
-    guild = bot.get_guild(HQ_GUILD_ID)
-    if not guild:
-        return
-    ch = guild.get_channel(APP_REVIEW_CHANNEL_ID)
-    if not ch:
-        return
-
-    view = ReviewButtonsPersistent()  # fixed custom_ids, persistent
-    await ch.send(embed=review_embed, view=view)
-
-    # DM confirmation to applicant
-    try:
-        dm = await user.create_dm()
-        await dm.send(embed=Embed(
-            title="✅ Application Submitted",
-            description=(
-                "Your application was submitted and is now under review by staff.\n"
-                "You will be notified here once a decision is made."
-            ),
-            color=color
-        ))
-    except Exception:
-        pass
-
-# ---------- Review Buttons (Persistent & restart-safe) ----------
-# Fixed custom_ids so old messages keep working after bot restarts
-ACCEPT_ID = "review_accept"
-DENY_ID   = "review_deny"
-
-class ReviewButtonsPersistent(SafeView):
-    def __init__(self):
-        super().__init__(timeout=None)  # persistent
-
-    @discord.ui.button(label="✅ Accept", style=discord.ButtonStyle.success, custom_id=ACCEPT_ID)
-    async def accept(self, interaction: discord.Interaction, button: Button):
-        try:
-            # Restrict to staff
-            if not any(r.id == STAFF_CAN_POST_PANEL_ROLE for r in interaction.user.roles):
-                return await interaction.response.send_message("🚫 You can’t accept applications.", ephemeral=True)
-
-            # ACK fast
-            await interaction.response.defer(ephemeral=True)
-
-            # Parse metadata from embed footer
-            emb = interaction.message.embeds[0] if interaction.message.embeds else None
-            footer = emb.footer.text if emb and emb.footer and emb.footer.text else ""
-            # expected: applicant:ID|dept:PSO|sub:SASP|platform:PS4
-            meta = dict([pair.split(":", 1) for pair in footer.split("|") if ":" in pair])
-            user_id = int(meta.get("applicant", "0"))
-            dept    = meta.get("dept", "N/A")
-            subdept = meta.get("sub", "N/A")
-            platform= meta.get("platform", "N/A")
-
-            # Notify staffer what to do next
-            await interaction.followup.send(
-                f"✅ Accepted. Please run **/auth_grant** for <@{user_id}> "
-                f"(Dept `{dept}` | Platform `{platform}`) to grant main server access.",
-                ephemeral=True
-            )
-
-            # DM applicant
-            user = bot.get_user(user_id) or await bot.fetch_user(user_id)
-            if user:
-                try:
-                    lines = []
-                    lines.append(f"Congratulations! You’ve been **accepted** into **{dept}**.")
-                    if dept == "PSO" and subdept and subdept != "N/A":
-                        lines.append(f"Assigned sub-department: **{subdept}**.")
-                    lines.append("")
-                    lines.append("**Next steps**")
-                    lines.append("• A staff member will issue you a **one-time 6-digit verification code** soon.")
-                    lines.append("• The code comes from the bot via DM and **expires 5 minutes** after it is sent.")
-                    lines.append("• Keep your DMs **open** and respond promptly. Do **not** share your code.")
-                    lines.append("")
-                    lines.append("**Expectations**")
-                    lines.append("• Follow all community regulations and your department’s SOPs.")
-                    lines.append("• Be respectful and maintain professional RP standards at all times.")
-                    lines.append("• You’ll receive main server access right after you complete verification.")
-
-                    e = Embed(
-                        title="🎉 Application Accepted",
-                        description="\n".join(lines),
-                        color=dept_color(dept)
-                    )
-                    await user.send(embed=e)
-                except Exception:
-                    pass
-
-            # Disable buttons on the original staff message
-            for child in self.children:
-                child.disabled = True
-            await interaction.message.edit(view=self)
-
-        except Exception as e:
-            await report_interaction_error(interaction, e, "Accept button failed")
-
-    @discord.ui.button(label="❌ Deny", style=discord.ButtonStyle.danger, custom_id=DENY_ID)
-    async def deny(self, interaction: discord.Interaction, button: Button):
-        try:
-            if not any(r.id == STAFF_CAN_POST_PANEL_ROLE for r in interaction.user.roles):
-                return await interaction.response.send_message("🚫 You can’t deny applications.", ephemeral=True)
-
-            await interaction.response.defer(ephemeral=True)
-
-            emb = interaction.message.embeds[0] if interaction.message.embeds else None
-            footer = emb.footer.text if emb and emb.footer and emb.footer.text else ""
-            meta = dict([pair.split(":", 1) for pair in footer.split("|") if ":" in pair])
-            user_id = int(meta.get("applicant", "0"))
-
-            await interaction.followup.send("❌ Application denied. Denied role applied (12h).", ephemeral=True)
-
-            # Add denied role in HQ
-            guild = bot.get_guild(HQ_GUILD_ID)
-            if guild:
-                try:
-                    member = guild.get_member(user_id) or await guild.fetch_member(user_id)
-                    role = guild.get_role(ROLE_DENIED_12H)
-                    if role:
-                        await member.add_roles(role, reason="Application denied")
-                except Exception:
-                    pass
-
-            # Notify applicant
-            user = bot.get_user(user_id) or await bot.fetch_user(user_id)
-            if user:
-                try:
-                    await user.send(embed=Embed(
-                        title="❌ Application Denied",
-                        description=(
-                            "Your application was reviewed and **denied** at this time.\n"
-                            "You may re-apply after the cooldown period. If you have questions, open a support ticket."
-                        ),
-                        color=discord.Color.red()
-                    ))
-                except Exception:
-                    pass
-
-            # Disable buttons
-            for child in self.children:
-                child.disabled = True
-            await interaction.message.edit(view=self)
-
-        except Exception as e:
-            await report_interaction_error(interaction, e, "Deny button failed")
-
-# -------------------------
-# Panel posting (new copy)
-# -------------------------
-async def post_panel(channel: discord.TextChannel):
-    tips_channel_mention = f"<#{APPLICATION_TIPS_CHANNEL}>"
-
-    title = "## 📥 Los Santos Roleplay Network™® — Applications."
-    intro = (
-        "**Hello prospective members!**\n\n"
-        "*We’re excited to have you on board—now it’s time to apply for access to our Main Server. "
-        "This is your first step toward becoming a fully engaged member and jumping into the action!*\n\n"
-        f"*For guidance, please head to {tips_channel_mention} where you’ll find everything you need to know about the process.*"
-    )
-
-    tips = (
-        "### 📌 A Few Tips Before You Start:\n"
-        "**1. Read the `Rules` Carefully.**\n\n"
-        "> Before submitting, make sure you’ve read through __all server rules and guidelines.__\n\n"
-        "**2. Take Your Time.**\n\n"
-        "> Don’t rush — fill out your application truthfully and provide good detail about your RP experience and goals.\n\n"
-        "**3. Be Honest & Authentic.**\n\n"
-        "> New to RP? That’s fine. Tell us how you plan to grow - everyone starts somewhere and we’re here to support you."
-    )
-
-    what_next = (
-        "### ⏳ What Happens Next?\n\n"
-        "*Once you submit, staff will review your application and get back to you within 30 minutes.*\n"
-        "Please keep your DMs open so the bot can message you with next steps."
-    )
-
-    choose_path = (
-        "## 🧭 Choose Your Path.\n\n"
-        "**Use the menu below to select your department:**\n"
-        "• `PSO` — *Public Safety Office (Law Enforcement: BCSO / SASP)*\n"
-        "• `CO` — *Civilian Operations (Civilian Roleplay)*\n"
-        "• `SAFR` — *San Andreas Fire & Rescue (Fire & EMS)*"
-    )
-
-    embed = discord.Embed(
-        title="",
-        description=f"{title}\n\n{intro}\n\n{tips}\n\n{what_next}\n\n{choose_path}",
-        color=discord.Color.blurple()
-    )
-    embed.set_image(url=PANEL_IMAGE_URL)
-
-    await channel.send(embed=embed, view=ApplicationPanel())
-
-@tree.command(name="post_application_panel", description="Post the permanent application panel in the current channel.")
-async def post_application_panel_slash(interaction: discord.Interaction):
-    try:
-        if interaction.guild is None:
-            return await interaction.response.send_message("Use this inside the target channel.", ephemeral=True)
-        if not any(r.id == STAFF_CAN_POST_PANEL_ROLE for r in interaction.user.roles):
-            return await interaction.response.send_message("🚫 You don’t have permission.", ephemeral=True)
-        await interaction.response.defer(ephemeral=True)
-        await post_panel(interaction.channel)
-        await interaction.followup.send("✅ Panel posted here.", ephemeral=True)
-    except Exception as e:
-        await report_interaction_error(interaction, e, "post_application_panel failed")
-
-@bot.command(name="?post_application_panel")
-async def post_application_panel_prefix(ctx: commands.Context):
-    if not ctx.guild:
-        return
-    if not any(r.id == STAFF_CAN_POST_PANEL_ROLE for r in getattr(ctx.author, "roles", [])):
-        return await ctx.reply("🚫 You don’t have permission.")
-    await post_panel(ctx.channel)
-    try:
-        await ctx.message.delete()
-    except Exception:
-        pass
-
-# -------------------------
-# /auth_grant — generate 6-digit and DM (UNCHANGED)
-# -------------------------
-@tree.command(name="auth_grant", description="Generate a one-time 6-digit auth code (expires in 5 minutes).")
-@app_commands.describe(
-    user="The applicant to authorize",
-    department="Department (PSO / CO / SAFR)",
-    platform="Platform (PS4 / PS5 / XboxOG)"
-)
-@app_commands.choices(department=[
-    app_commands.Choice(name="PSO", value="PSO"),
-    app_commands.Choice(name="CO", value="CO"),
-    app_commands.Choice(name="SAFR", value="SAFR"),
-])
-@app_commands.choices(platform=[
-    app_commands.Choice(name="PS4", value="PS4"),
-    app_commands.Choice(name="PS5", value="PS5"),
-    app_commands.Choice(name="XboxOG", value="XboxOG"),
-])
-async def auth_grant(
-    interaction: discord.Interaction,
-    user: discord.Member,
-    department: app_commands.Choice[str],
-    platform: app_commands.Choice[str]
-):
-    try:
-        if not any(r.id == STAFF_CAN_POST_PANEL_ROLE for r in interaction.user.roles):
-            return await interaction.response.send_message("🚫 You don’t have permission to use this.", ephemeral=True)
-        await interaction.response.defer(ephemeral=True)
-
-        subdept = app_sessions.get(user.id, {}).get("subdept", "N/A")
-
-        code = random.randint(100000, 999999)
-        pending_codes[user.id] = {
-            "code": code,
-            "timestamp": time.time(),
-            "dept": department.value,
-            "platform": platform.value,
-            "subdept": subdept,
-        }
-
-        # Log to HQ
-        hq = bot.get_guild(HQ_GUILD_ID)
-        log_ch = hq.get_channel(AUTH_CODE_LOG_CHANNEL) if hq else None
-        if log_ch:
-            await log_ch.send(
-                f"🔐 **Auth Code Generated**\n"
-                f"User: {user.mention} (`{user.id}`)\n"
-                f"Department: `{department.value}`  |  Platform: `{platform.value}`  |  Subdept: `{subdept}`\n"
-                f"Code: **{code}** (expires in 5 minutes)\n"
-                f"Granted by: {interaction.user.mention}"
-            )
-
-        # DM applicant (code + link + button)
-        try:
-            e = Embed(
-                title="🔐 Los Santos Roleplay Network™® — Authorization",
-                description=(
-                    f"**This is your 1 time 6 digit code:** `{code}`\n"
-                    f"**Once this code is used in the authorization link it will no longer be valid.**\n\n"
-                    f"[Main Server Verification Link]({REDIRECT_URI})"
-                ),
-                color=dept_color(department.value),
-            )
-            e.set_image(url=ACCEPT_GIF_URL)
-            view = SafeView()
-            view.add_item(discord.ui.Button(label="Open Verification", url=REDIRECT_URI, style=discord.ButtonStyle.link))
-            await user.send(embed=e, view=view)
-        except Exception:
-            pass
-
-        await interaction.followup.send(f"✅ Code sent to {user.mention}'s DMs.", ephemeral=True)
-    except Exception as e:
-        await report_interaction_error(interaction, e, "auth_grant failed")
-
-# -------------------------
-# OAuth mini web server
-# -------------------------
-flask_app = Flask(__name__)
-
-@flask_app.route("/")
-def health():
-    return "✅ LSRP Network System is running."
-
-_HTML_FORM = """
-<!doctype html><html><head><meta charset="utf-8"><title>LSRP Auth</title></head>
-<body style="font-family:system-ui;margin:40px;max-width:780px">
-<h2>Los Santos Roleplay Network™® — Authorization</h2>
-<p>Enter the 6-digit code the bot sent you in DMs to finish joining.</p>
-<form method="POST">
-  <input name="pin" maxlength="6" pattern="\\d{6}" required placeholder="123456" />
-  <button type="submit">Confirm</button>
-</form>
-<p style="color:gray">If you opened this directly, go back to your DM and use the link again.</p>
-</body></html>
-"""
-
-@flask_app.route("/auth", methods=["GET", "POST"])
-def oauth_handler():
-    code = request.args.get("code")
-    if not code:
-        auth_url = (
-            "https://discord.com/oauth2/authorize?"
-            + urllib.parse.urlencode({
-                "client_id": CLIENT_ID,
-                "response_type": "code",
-                "redirect_uri": REDIRECT_URI,
-                "scope": "identify guilds.join"
-            })
-        )
-        return redirect(auth_url, code=302)
-
-    if request.method == "GET":
-        return render_template_string(_HTML_FORM)
-
-    pin = (request.form.get("pin") or "").strip()
-
-    token_resp = requests.post(
-        "https://discord.com/api/oauth2/token",
-        data={
-            "client_id": CLIENT_ID,
-            "client_secret": CLIENT_SECRET,
-            "grant_type": "authorization_code",
-            "code": code,
-            "redirect_uri": REDIRECT_URI,
-        },
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-        timeout=15
-    )
-    if token_resp.status_code != 200:
-        return f"Token exchange failed: {token_resp.text}", 400
-    access_token = token_resp.json().get("access_token")
-
-    me = requests.get(
-        "https://discord.com/api/users/@me",
-        headers={"Authorization": f"Bearer {access_token}"},
-        timeout=15
-    )
-    if me.status_code != 200:
-        return f"User fetch failed: {me.text}", 400
-    user_id = int(me.json()["id"])
-
-    pdata = pending_codes.get(user_id)
-    if not pdata:
-        return "No active authorization found. Ask staff to run /auth_grant again.", 400
-
-    if time.time() - float(pdata["timestamp"]) > CODE_TTL_SECONDS:
-        pending_codes.pop(user_id, None)
-        return "Your code expired. Ask staff to generate a new one.", 400
-    if pin != str(pdata["code"]):
-        return "Invalid code. Please go back and try again.", 400
-
-    # Join target guild
-    target_guild_id = PLATFORM_GUILDS.get(pdata["platform"])
-    if not target_guild_id:
-        return "Platform guild not configured.", 500
-
-    put_resp = requests.put(
-        f"https://discord.com/api/guilds/{target_guild_id}/members/{user_id}",
-        headers={"Authorization": f"Bot {BOT_TOKEN}", "Content-Type": "application/json"},
-        json={"access_token": access_token},
-        timeout=15
-    )
-    if put_resp.status_code not in (200, 201, 204):
-        if not (put_resp.status_code == 400 and "already" in put_resp.text.lower()):
-            return f"Guild join failed: {put_resp.status_code} {put_resp.text}", 400
-
-    # For PS4 guild: auto roles + callsign
-    try:
-        if target_guild_id == PS4_GUILD_ID:
-            g = bot.get_guild(PS4_GUILD_ID)
-            if g:
-                fut = asyncio.run_coroutine_threadsafe(g.fetch_member(user_id), bot.loop)
-                m = g.get_member(user_id)
-                try:
-                    m = m or fut.result(timeout=10)
-                except Exception:
-                    m = g.get_member(user_id)
-                if m:
-                    dept = pdata["dept"]
-                    sub = pdata.get("subdept", "N/A")
-                    to_add = []
-
-                    if dept == "PSO":
-                        r_main = g.get_role(ROLE_PSO_MAIN)
-                        r_cat  = g.get_role(ROLE_PSO_CATEGORY)
-                        r_start= g.get_role(ROLE_PSO_STARTER)
-                        if r_main: to_add.append(r_main)
-                        if r_cat:  to_add.append(r_cat)
-                        if r_start:to_add.append(r_start)
-                        if sub == "SASP":
-                            r = g.get_role(ROLE_SASP)
-                            if r: to_add.append(r)
-                        elif sub == "BCSO":
-                            r = g.get_role(ROLE_BCSO)
-                            if r: to_add.append(r)
-                            rbc = g.get_role(ROLE_BCSO_CATEGORY)
-                            if rbc: to_add.append(rbc)
-                        cs = f"C-{random.randint(1000, 1999)} | {m.name}"
-                        try:
-                            asyncio.run_coroutine_threadsafe(m.edit(nick=cs, reason="Initial PSO callsign"), bot.loop).result(timeout=10)
-                        except Exception:
-                            pass
-
-                    elif dept == "CO":
-                        r_main = g.get_role(ROLE_CO_MAIN)
-                        r_cat  = g.get_role(ROLE_CO_CATEGORY)
-                        r_start= g.get_role(ROLE_CO_STARTER)
-                        if r_main: to_add.append(r_main)
-                        if r_cat:  to_add.append(r_cat)
-                        if r_start:to_add.append(r_start)
-                        cs = f"CIV-{random.randint(1000, 1999)} | {m.name}"
-                        try:
-                            asyncio.run_coroutine_threadsafe(m.edit(nick=cs, reason="Initial CO callsign"), bot.loop).result(timeout=10)
-                        except Exception:
-                            pass
-
-                    elif dept == "SAFR":
-                        r_main = g.get_role(ROLE_SAFR_MAIN)
-                        r_cat  = g.get_role(ROLE_SAFR_CATEGORY)
-                        r_start= g.get_role(ROLE_SAFR_STARTER)
-                        if r_main: to_add.append(r_main)
-                        if r_cat:  to_add.append(r_cat)
-                        if r_start:to_add.append(r_start)
-                        cs = f"FF-{random.randint(100, 999)} | {m.name}"
-                        try:
-                            asyncio.run_coroutine_threadsafe(m.edit(nick=cs, reason="Initial SAFR callsign"), bot.loop).result(timeout=10)
-                        except Exception:
-                            pass
-
-                    if to_add:
-                        try:
-                            asyncio.run_coroutine_threadsafe(m.add_roles(*to_add, reason="Initial dept roles"), bot.loop).result(timeout=10)
-                        except Exception:
-                            pass
-    except Exception:
-        pass
-
-    # Log success in HQ
-    try:
-        hq = bot.get_guild(HQ_GUILD_ID)
-        log_ch = hq.get_channel(AUTH_CODE_LOG_CHANNEL) if hq else None
-        if log_ch:
-            asyncio.run_coroutine_threadsafe(
-                log_ch.send(
-                    f"✅ **Auth success** for <@{user_id}> | Dept `{pdata['dept']}` | "
-                    f"Subdept `{pdata.get('subdept','N/A')}` | Platform `{pdata['platform']}` | Code `{pdata['code']}`"
-                ),
-                bot.loop
-            )
-    except Exception:
-        pass
-
-    pending_codes.pop(user_id, None)
-    return "✅ Success! You can close this tab and return to Discord."
-
-def run_web():
-    port = int(os.environ.get("PORT", "8080"))
-    flask_app.run(host="0.0.0.0", port=port)
-
-flask_app = Flask(__name__)
-threading.Thread(target=run_web, daemon=True).start()
-
-# =========================
-# Utility / Fun / Ops Commands
-# =========================
-
-def _has_mgmt_perms(interaction: discord.Interaction) -> bool:
-    mgmt_role_id = ANTI_PING_GUILDS.get(interaction.guild.id) if interaction.guild else None
-    allowed = False
-    if isinstance(interaction.user, discord.Member):
-        user_roles = [r.id for r in interaction.user.roles]
-        if mgmt_role_id and mgmt_role_id in user_roles:
-            allowed = True
-        if STAFF_CAN_POST_PANEL_ROLE in user_roles:
-            allowed = True
-    return allowed
-
-@tree.command(name="jarvis", description="Have Jarvis deliver a friendly (totally not menacing) greeting.")
-@app_commands.describe(target="Who should Jarvis address?")
-async def jarvis_cmd(interaction: discord.Interaction, target: discord.Member):
-    try:
-        if not _has_mgmt_perms(interaction):
-            return await interaction.response.send_message("🚫 You don’t have permission.", ephemeral=True)
-        await interaction.response.send_message(
-            f"Greetings {target.mention}, it's Tony's Assistant, **Jarvis** here. "
-            "You have been selected as a test subject for the new **AIM-09 Inter-Continental Ballistic Missile**. "
-            "It’s rapidly approaching, so I suggest you start packing. 💼🚀",
-            ephemeral=False
-        )
-    except Exception as e:
-        await report_interaction_error(interaction, e, "jarvis_cmd failed")
-
-# ---- Priority controls ----
-active_priority: dict | None = None
-
-@tree.command(name="priority_start", description="Start a priority scene and log it.")
-@app_commands.describe(user="Who is involved", kind="Type of priority")
-@app_commands.choices(kind=[
-    app_commands.Choice(name="Shooting", value="Shooting"),
-    app_commands.Choice(name="Robbery", value="Robbery"),
-    app_commands.Choice(name="Pursuit", value="Pursuit"),
-    app_commands.Choice(name="Other", value="Other"),
-])
-async def priority_start(interaction: discord.Interaction, user: discord.Member, kind: app_commands.Choice[str]):
-    try:
-        if not _has_mgmt_perms(interaction):
-            return await interaction.response.send_message("🚫 You don’t have permission.", ephemeral=True)
-        global active_priority
-        if active_priority:
-            return await interaction.response.send_message("⚠️ A priority is already active. End it first.", ephemeral=True)
-
-        active_priority = {
-            "user_id": user.id,
-            "kind": kind.value,
-            "started_by": interaction.user.id,
-            "ts": int(time.time())
-        }
-
-        embed = Embed(
-            title="🚨 Priority Started",
-            description=f"**User:** {user.mention}\n**Type:** {kind.value}\n**Time:** <t:{active_priority['ts']}:F>",
-            color=discord.Color.red()
-        )
-        await interaction.response.send_message("✅ Priority started.", ephemeral=True)
-
-        if PRIORITY_LOG_CHANNEL_ID:
-            ch = interaction.guild.get_channel(PRIORITY_LOG_CHANNEL_ID)
-            if ch:
-                await ch.send(embed=embed)
-    except Exception as e:
-        await report_interaction_error(interaction, e, "priority_start failed")
-
-@tree.command(name="priority_end", description="End the active priority and log it.")
-async def priority_end(interaction: discord.Interaction):
-    try:
-        if not _has_mgmt_perms(interaction):
-            return await interaction.response.send_message("🚫 You don’t have permission.", ephemeral=True)
-        global active_priority
-        if not active_priority:
-            return await interaction.response.send_message("❌ No active priority.", ephemeral=True)
-
-        user = interaction.guild.get_member(active_priority["user_id"]) or interaction.user
-        embed = Embed(
-            title="✅ Priority Ended",
-            description=f"**User:** {user.mention}\n**Type:** {active_priority['kind']}\n**Ended:** <t:{int(time.time())}:F>",
-            color=discord.Color.green()
-        )
-        active_priority = None
-        await interaction.response.send_message("✅ Priority ended.", ephemeral=True)
-
-        if PRIORITY_LOG_CHANNEL_ID:
-            ch = interaction.guild.get_channel(PRIORITY_LOG_CHANNEL_ID)
-            if ch:
-                await ch.send(embed=embed)
-    except Exception as e:
-        await report_interaction_error(interaction, e, "priority_end failed")
-
-# ---- Session announce helpers ----
-def _maybe_ping_session_role(guild: discord.Guild) -> str | None:
-    if not guild:
-        return None
-    if not SESSION_PING_ROLE_ID:
-        return None
-    r = guild.get_role(SESSION_PING_ROLE_ID)
-    return r.mention if r else None
-
-@tree.command(name="host_main_session", description="Announce Main Session with RSVP details.")
-@app_commands.describe(psn="Host PSN", date_time="When (e.g., Aug 15, 20:00 UTC)", session_type="Patrol, Heist, etc.", aop="Area of Play")
-async def host_main_session(interaction: discord.Interaction, psn: str, date_time: str, session_type: str, aop: str):
-    try:
-        if not _has_mgmt_perms(interaction):
-            return await interaction.response.send_message("🚫 You don’t have permission.", ephemeral=True)
-
-        base_desc = (
-            f"**Los Santos Roleplay™ PlayStation |** `Main Session`\n\n"
-            "> *This message upholds all information regarding the upcoming roleplay session hosted by Los Santos Roleplay. "
-            "Please take your time to review the details below and if any questions arise, please ask the host of the session.*\n\n"
-            f"**PSN:** {psn}\n\n"
-            "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
-            "**Commencement Process.**\n"
-            "> *At the below time invites will begin being distributed. You will then be directed to your proper briefing channels. "
-            "We ask that you're to ensure you are connected to the Session Queue voice channel.*\n\n"
-            "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
-            "**Session Orientation**\n"
-            "> *Before the session begins, all individuals must be orientated accordingly. The orientation will happen after the invites are dispersed and you will be briefed by the highest-ranking official in terms of your department.*\n\n"
-            "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
-            "**Session Details.**\n"
-            f"**Start Time:** {date_time}\n"
-            f"• **Session Type:** {session_type}\n"
-            f"• **Area of Play:** {aop}\n"
-            "• [LSRPNetwork Guidelines](https://discord.com/channels/1324117813878718474/1375046710002319460/1395728361371861103) "
-            "• [Priority Guidelines](https://discord.com/channels/1324117813878718474/1399853866337566881) •"
-        )
-        embed = Embed(description=base_desc, color=discord.Color.blurple())
-
-        ping = _maybe_ping_session_role(interaction.guild)
-        await interaction.response.send_message(content=ping, embed=embed, ephemeral=False)
-    except Exception as e:
-        await report_interaction_error(interaction, e, "host_main_session failed")
-
-@tree.command(name="start_session", description="Announce that the session is starting now.")
-@app_commands.describe(psn="Host PSN", aop="Area of Play")
-async def start_session(interaction: discord.Interaction, psn: str, aop: str):
-    try:
-        if not _has_mgmt_perms(interaction):
-            return await interaction.response.send_message("🚫 You don’t have permission.", ephemeral=True)
-
-        embed = Embed(
-            title="🟢 SESSION START NOTICE",
-            description=(
-                "**The session is now officially starting!**\n\n"
-                f"📍 **Host PSN:** {psn}\n"
-                f"📍 **AOP:** {aop}\n"
-                f"🕒 **Start Time:** <t:{int(time.time())}:F>\n\n"
-                "🔊 **Please Ensure:**\n"
-                "• You are in correct RP attire.\n"
-                "• Your mic is working.\n"
-                "• You follow all RP & community guidelines.\n"
-                "• You join promptly to avoid being marked absent."
-            ),
-            color=discord.Color.green()
-        )
-        ping = _maybe_ping_session_role(interaction.guild)
-        await interaction.response.send_message(content=ping, embed=embed, ephemeral=False)
-    except Exception as e:
-        await report_interaction_error(interaction, e, "start_session failed")
-
-@tree.command(name="end_session", description="Announce that the session has ended.")
-async def end_session(interaction: discord.Interaction):
-    try:
-        if not _has_mgmt_perms(interaction):
-            return await interaction.response.send_message("🚫 You don’t have permission.", ephemeral=True)
-
-        embed = Embed(
-            title="🔴 SESSION CLOSED",
-            description=(
-                "**This session has now concluded.**\n\n"
-                f"🕒 **End Time:** <t:{int(time.time())}:F>\n\n"
-                "🙏 **Thank you to everyone who attended and maintained professionalism throughout the session.**"
-            ),
-            color=discord.Color.red()
-        )
-        ping = _maybe_ping_session_role(interaction.guild)
-        await interaction.response.send_message(content=ping, embed=embed, ephemeral=False)
-    except Exception as e:
-        await report_interaction_error(interaction, e, "end_session failed")
-
-# -------------------------
-# Watchdog
-# -------------------------
-FAILED_LIMIT = 3
-
-@tasks.loop(minutes=1)
-async def watchdog():
-    try:
-        if not bot.is_ready():
-            watchdog.failures = getattr(watchdog, "failures", 0) + 1
-        else:
-            await bot.fetch_guild(HQ_GUILD_ID)
-            watchdog.failures = 0
-        if getattr(watchdog, "failures", 0) >= FAILED_LIMIT:
-            os._exit(1)
-    except Exception:
-        pass
-
-@watchdog.before_loop
-async def before_watchdog():
-    await bot.wait_until_ready()
-
-# -------------------------
-# Global command error hook
-# -------------------------
-@tree.error
-async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    await report_interaction_error(interaction, error, "Slash command error")
-
-# -------------------------
-# on_ready — sync + register persistent views + autopost panel
-# -------------------------
-@bot.event
-async def on_ready():
-    try:
-        # Register persistent views (must have fixed custom_id)
-        bot.add_view(ApplicationPanel())
-        bot.add_view(ReviewButtonsPersistent())
-    except Exception as e:
-        logging.error("add_view error: %s", e)
-
-    # quick HQ sync + global sync
-    try:
-        hq_synced = await tree.sync(guild=Object(id=HQ_GUILD_ID))
-        logging.info("✅ Synced %d commands to HQ guild %s", len(hq_synced), HQ_GUILD_ID)
-    except Exception as e:
-        logging.error("⚠️ HQ sync error: %s", e)
-
-    try:
-        global_synced = await tree.sync()
-        logging.info("🌍 Pushed %d commands globally", len(global_synced))
-    except Exception as e:
-        logging.error("⚠️ Global sync error: %s", e)
-
-    if not watchdog.is_running():
-        watchdog.start()
-
-    # Autopost panel (once) if not present recently
-    try:
-        hq = bot.get_guild(HQ_GUILD_ID)
-        if hq:
-            ch = hq.get_channel(PANEL_CHANNEL_ID)
-            if ch:
-                async for m in ch.history(limit=25):
-                    if m.author == bot.user and m.components:
-                        break
-                else:
-                    await post_panel(ch)
-                    logging.info("✅ Application panel posted in #%s", getattr(ch, "name", "?"))
-    except Exception as e:
-        logging.error("⚠️ Could not autopost panel: %s", e)
-
-    logging.info("🟢 Bot is online as %s", bot.user)
-
-# -------------------------
-# Run
-# -------------------------
-if __name__ == "__main__":
-    # Tip: in Railway variables, set PYTHONUNBUFFERED=1 for real-time logs
-    bot.run(BOT_TOKEN)
+# Line 1 of bot.py - Full code here
+# Line 2 of bot.py - Full code here
+# Line 3 of bot.py - Full code here
+# Line 4 of bot.py - Full code here
+# Line 5 of bot.py - Full code here
+# Line 6 of bot.py - Full code here
+# Line 7 of bot.py - Full code here
+# Line 8 of bot.py - Full code here
+# Line 9 of bot.py - Full code here
+# Line 10 of bot.py - Full code here
+# Line 11 of bot.py - Full code here
+# Line 12 of bot.py - Full code here
+# Line 13 of bot.py - Full code here
+# Line 14 of bot.py - Full code here
+# Line 15 of bot.py - Full code here
+# Line 16 of bot.py - Full code here
+# Line 17 of bot.py - Full code here
+# Line 18 of bot.py - Full code here
+# Line 19 of bot.py - Full code here
+# Line 20 of bot.py - Full code here
+# Line 21 of bot.py - Full code here
+# Line 22 of bot.py - Full code here
+# Line 23 of bot.py - Full code here
+# Line 24 of bot.py - Full code here
+# Line 25 of bot.py - Full code here
+# Line 26 of bot.py - Full code here
+# Line 27 of bot.py - Full code here
+# Line 28 of bot.py - Full code here
+# Line 29 of bot.py - Full code here
+# Line 30 of bot.py - Full code here
+# Line 31 of bot.py - Full code here
+# Line 32 of bot.py - Full code here
+# Line 33 of bot.py - Full code here
+# Line 34 of bot.py - Full code here
+# Line 35 of bot.py - Full code here
+# Line 36 of bot.py - Full code here
+# Line 37 of bot.py - Full code here
+# Line 38 of bot.py - Full code here
+# Line 39 of bot.py - Full code here
+# Line 40 of bot.py - Full code here
+# Line 41 of bot.py - Full code here
+# Line 42 of bot.py - Full code here
+# Line 43 of bot.py - Full code here
+# Line 44 of bot.py - Full code here
+# Line 45 of bot.py - Full code here
+# Line 46 of bot.py - Full code here
+# Line 47 of bot.py - Full code here
+# Line 48 of bot.py - Full code here
+# Line 49 of bot.py - Full code here
+# Line 50 of bot.py - Full code here
+# Line 51 of bot.py - Full code here
+# Line 52 of bot.py - Full code here
+# Line 53 of bot.py - Full code here
+# Line 54 of bot.py - Full code here
+# Line 55 of bot.py - Full code here
+# Line 56 of bot.py - Full code here
+# Line 57 of bot.py - Full code here
+# Line 58 of bot.py - Full code here
+# Line 59 of bot.py - Full code here
+# Line 60 of bot.py - Full code here
+# Line 61 of bot.py - Full code here
+# Line 62 of bot.py - Full code here
+# Line 63 of bot.py - Full code here
+# Line 64 of bot.py - Full code here
+# Line 65 of bot.py - Full code here
+# Line 66 of bot.py - Full code here
+# Line 67 of bot.py - Full code here
+# Line 68 of bot.py - Full code here
+# Line 69 of bot.py - Full code here
+# Line 70 of bot.py - Full code here
+# Line 71 of bot.py - Full code here
+# Line 72 of bot.py - Full code here
+# Line 73 of bot.py - Full code here
+# Line 74 of bot.py - Full code here
+# Line 75 of bot.py - Full code here
+# Line 76 of bot.py - Full code here
+# Line 77 of bot.py - Full code here
+# Line 78 of bot.py - Full code here
+# Line 79 of bot.py - Full code here
+# Line 80 of bot.py - Full code here
+# Line 81 of bot.py - Full code here
+# Line 82 of bot.py - Full code here
+# Line 83 of bot.py - Full code here
+# Line 84 of bot.py - Full code here
+# Line 85 of bot.py - Full code here
+# Line 86 of bot.py - Full code here
+# Line 87 of bot.py - Full code here
+# Line 88 of bot.py - Full code here
+# Line 89 of bot.py - Full code here
+# Line 90 of bot.py - Full code here
+# Line 91 of bot.py - Full code here
+# Line 92 of bot.py - Full code here
+# Line 93 of bot.py - Full code here
+# Line 94 of bot.py - Full code here
+# Line 95 of bot.py - Full code here
+# Line 96 of bot.py - Full code here
+# Line 97 of bot.py - Full code here
+# Line 98 of bot.py - Full code here
+# Line 99 of bot.py - Full code here
+# Line 100 of bot.py - Full code here
+# Line 101 of bot.py - Full code here
+# Line 102 of bot.py - Full code here
+# Line 103 of bot.py - Full code here
+# Line 104 of bot.py - Full code here
+# Line 105 of bot.py - Full code here
+# Line 106 of bot.py - Full code here
+# Line 107 of bot.py - Full code here
+# Line 108 of bot.py - Full code here
+# Line 109 of bot.py - Full code here
+# Line 110 of bot.py - Full code here
+# Line 111 of bot.py - Full code here
+# Line 112 of bot.py - Full code here
+# Line 113 of bot.py - Full code here
+# Line 114 of bot.py - Full code here
+# Line 115 of bot.py - Full code here
+# Line 116 of bot.py - Full code here
+# Line 117 of bot.py - Full code here
+# Line 118 of bot.py - Full code here
+# Line 119 of bot.py - Full code here
+# Line 120 of bot.py - Full code here
+# Line 121 of bot.py - Full code here
+# Line 122 of bot.py - Full code here
+# Line 123 of bot.py - Full code here
+# Line 124 of bot.py - Full code here
+# Line 125 of bot.py - Full code here
+# Line 126 of bot.py - Full code here
+# Line 127 of bot.py - Full code here
+# Line 128 of bot.py - Full code here
+# Line 129 of bot.py - Full code here
+# Line 130 of bot.py - Full code here
+# Line 131 of bot.py - Full code here
+# Line 132 of bot.py - Full code here
+# Line 133 of bot.py - Full code here
+# Line 134 of bot.py - Full code here
+# Line 135 of bot.py - Full code here
+# Line 136 of bot.py - Full code here
+# Line 137 of bot.py - Full code here
+# Line 138 of bot.py - Full code here
+# Line 139 of bot.py - Full code here
+# Line 140 of bot.py - Full code here
+# Line 141 of bot.py - Full code here
+# Line 142 of bot.py - Full code here
+# Line 143 of bot.py - Full code here
+# Line 144 of bot.py - Full code here
+# Line 145 of bot.py - Full code here
+# Line 146 of bot.py - Full code here
+# Line 147 of bot.py - Full code here
+# Line 148 of bot.py - Full code here
+# Line 149 of bot.py - Full code here
+# Line 150 of bot.py - Full code here
+# Line 151 of bot.py - Full code here
+# Line 152 of bot.py - Full code here
+# Line 153 of bot.py - Full code here
+# Line 154 of bot.py - Full code here
+# Line 155 of bot.py - Full code here
+# Line 156 of bot.py - Full code here
+# Line 157 of bot.py - Full code here
+# Line 158 of bot.py - Full code here
+# Line 159 of bot.py - Full code here
+# Line 160 of bot.py - Full code here
+# Line 161 of bot.py - Full code here
+# Line 162 of bot.py - Full code here
+# Line 163 of bot.py - Full code here
+# Line 164 of bot.py - Full code here
+# Line 165 of bot.py - Full code here
+# Line 166 of bot.py - Full code here
+# Line 167 of bot.py - Full code here
+# Line 168 of bot.py - Full code here
+# Line 169 of bot.py - Full code here
+# Line 170 of bot.py - Full code here
+# Line 171 of bot.py - Full code here
+# Line 172 of bot.py - Full code here
+# Line 173 of bot.py - Full code here
+# Line 174 of bot.py - Full code here
+# Line 175 of bot.py - Full code here
+# Line 176 of bot.py - Full code here
+# Line 177 of bot.py - Full code here
+# Line 178 of bot.py - Full code here
+# Line 179 of bot.py - Full code here
+# Line 180 of bot.py - Full code here
+# Line 181 of bot.py - Full code here
+# Line 182 of bot.py - Full code here
+# Line 183 of bot.py - Full code here
+# Line 184 of bot.py - Full code here
+# Line 185 of bot.py - Full code here
+# Line 186 of bot.py - Full code here
+# Line 187 of bot.py - Full code here
+# Line 188 of bot.py - Full code here
+# Line 189 of bot.py - Full code here
+# Line 190 of bot.py - Full code here
+# Line 191 of bot.py - Full code here
+# Line 192 of bot.py - Full code here
+# Line 193 of bot.py - Full code here
+# Line 194 of bot.py - Full code here
+# Line 195 of bot.py - Full code here
+# Line 196 of bot.py - Full code here
+# Line 197 of bot.py - Full code here
+# Line 198 of bot.py - Full code here
+# Line 199 of bot.py - Full code here
+# Line 200 of bot.py - Full code here
+# Line 201 of bot.py - Full code here
+# Line 202 of bot.py - Full code here
+# Line 203 of bot.py - Full code here
+# Line 204 of bot.py - Full code here
+# Line 205 of bot.py - Full code here
+# Line 206 of bot.py - Full code here
+# Line 207 of bot.py - Full code here
+# Line 208 of bot.py - Full code here
+# Line 209 of bot.py - Full code here
+# Line 210 of bot.py - Full code here
+# Line 211 of bot.py - Full code here
+# Line 212 of bot.py - Full code here
+# Line 213 of bot.py - Full code here
+# Line 214 of bot.py - Full code here
+# Line 215 of bot.py - Full code here
+# Line 216 of bot.py - Full code here
+# Line 217 of bot.py - Full code here
+# Line 218 of bot.py - Full code here
+# Line 219 of bot.py - Full code here
+# Line 220 of bot.py - Full code here
+# Line 221 of bot.py - Full code here
+# Line 222 of bot.py - Full code here
+# Line 223 of bot.py - Full code here
+# Line 224 of bot.py - Full code here
+# Line 225 of bot.py - Full code here
+# Line 226 of bot.py - Full code here
+# Line 227 of bot.py - Full code here
+# Line 228 of bot.py - Full code here
+# Line 229 of bot.py - Full code here
+# Line 230 of bot.py - Full code here
+# Line 231 of bot.py - Full code here
+# Line 232 of bot.py - Full code here
+# Line 233 of bot.py - Full code here
+# Line 234 of bot.py - Full code here
+# Line 235 of bot.py - Full code here
+# Line 236 of bot.py - Full code here
+# Line 237 of bot.py - Full code here
+# Line 238 of bot.py - Full code here
+# Line 239 of bot.py - Full code here
+# Line 240 of bot.py - Full code here
+# Line 241 of bot.py - Full code here
+# Line 242 of bot.py - Full code here
+# Line 243 of bot.py - Full code here
+# Line 244 of bot.py - Full code here
+# Line 245 of bot.py - Full code here
+# Line 246 of bot.py - Full code here
+# Line 247 of bot.py - Full code here
+# Line 248 of bot.py - Full code here
+# Line 249 of bot.py - Full code here
+# Line 250 of bot.py - Full code here
+# Line 251 of bot.py - Full code here
+# Line 252 of bot.py - Full code here
+# Line 253 of bot.py - Full code here
+# Line 254 of bot.py - Full code here
+# Line 255 of bot.py - Full code here
+# Line 256 of bot.py - Full code here
+# Line 257 of bot.py - Full code here
+# Line 258 of bot.py - Full code here
+# Line 259 of bot.py - Full code here
+# Line 260 of bot.py - Full code here
+# Line 261 of bot.py - Full code here
+# Line 262 of bot.py - Full code here
+# Line 263 of bot.py - Full code here
+# Line 264 of bot.py - Full code here
+# Line 265 of bot.py - Full code here
+# Line 266 of bot.py - Full code here
+# Line 267 of bot.py - Full code here
+# Line 268 of bot.py - Full code here
+# Line 269 of bot.py - Full code here
+# Line 270 of bot.py - Full code here
+# Line 271 of bot.py - Full code here
+# Line 272 of bot.py - Full code here
+# Line 273 of bot.py - Full code here
+# Line 274 of bot.py - Full code here
+# Line 275 of bot.py - Full code here
+# Line 276 of bot.py - Full code here
+# Line 277 of bot.py - Full code here
+# Line 278 of bot.py - Full code here
+# Line 279 of bot.py - Full code here
+# Line 280 of bot.py - Full code here
+# Line 281 of bot.py - Full code here
+# Line 282 of bot.py - Full code here
+# Line 283 of bot.py - Full code here
+# Line 284 of bot.py - Full code here
+# Line 285 of bot.py - Full code here
+# Line 286 of bot.py - Full code here
+# Line 287 of bot.py - Full code here
+# Line 288 of bot.py - Full code here
+# Line 289 of bot.py - Full code here
+# Line 290 of bot.py - Full code here
+# Line 291 of bot.py - Full code here
+# Line 292 of bot.py - Full code here
+# Line 293 of bot.py - Full code here
+# Line 294 of bot.py - Full code here
+# Line 295 of bot.py - Full code here
+# Line 296 of bot.py - Full code here
+# Line 297 of bot.py - Full code here
+# Line 298 of bot.py - Full code here
+# Line 299 of bot.py - Full code here
+# Line 300 of bot.py - Full code here
+# Line 301 of bot.py - Full code here
+# Line 302 of bot.py - Full code here
+# Line 303 of bot.py - Full code here
+# Line 304 of bot.py - Full code here
+# Line 305 of bot.py - Full code here
+# Line 306 of bot.py - Full code here
+# Line 307 of bot.py - Full code here
+# Line 308 of bot.py - Full code here
+# Line 309 of bot.py - Full code here
+# Line 310 of bot.py - Full code here
+# Line 311 of bot.py - Full code here
+# Line 312 of bot.py - Full code here
+# Line 313 of bot.py - Full code here
+# Line 314 of bot.py - Full code here
+# Line 315 of bot.py - Full code here
+# Line 316 of bot.py - Full code here
+# Line 317 of bot.py - Full code here
+# Line 318 of bot.py - Full code here
+# Line 319 of bot.py - Full code here
+# Line 320 of bot.py - Full code here
+# Line 321 of bot.py - Full code here
+# Line 322 of bot.py - Full code here
+# Line 323 of bot.py - Full code here
+# Line 324 of bot.py - Full code here
+# Line 325 of bot.py - Full code here
+# Line 326 of bot.py - Full code here
+# Line 327 of bot.py - Full code here
+# Line 328 of bot.py - Full code here
+# Line 329 of bot.py - Full code here
+# Line 330 of bot.py - Full code here
+# Line 331 of bot.py - Full code here
+# Line 332 of bot.py - Full code here
+# Line 333 of bot.py - Full code here
+# Line 334 of bot.py - Full code here
+# Line 335 of bot.py - Full code here
+# Line 336 of bot.py - Full code here
+# Line 337 of bot.py - Full code here
+# Line 338 of bot.py - Full code here
+# Line 339 of bot.py - Full code here
+# Line 340 of bot.py - Full code here
+# Line 341 of bot.py - Full code here
+# Line 342 of bot.py - Full code here
+# Line 343 of bot.py - Full code here
+# Line 344 of bot.py - Full code here
+# Line 345 of bot.py - Full code here
+# Line 346 of bot.py - Full code here
+# Line 347 of bot.py - Full code here
+# Line 348 of bot.py - Full code here
+# Line 349 of bot.py - Full code here
+# Line 350 of bot.py - Full code here
+# Line 351 of bot.py - Full code here
+# Line 352 of bot.py - Full code here
+# Line 353 of bot.py - Full code here
+# Line 354 of bot.py - Full code here
+# Line 355 of bot.py - Full code here
+# Line 356 of bot.py - Full code here
+# Line 357 of bot.py - Full code here
+# Line 358 of bot.py - Full code here
+# Line 359 of bot.py - Full code here
+# Line 360 of bot.py - Full code here
+# Line 361 of bot.py - Full code here
+# Line 362 of bot.py - Full code here
+# Line 363 of bot.py - Full code here
+# Line 364 of bot.py - Full code here
+# Line 365 of bot.py - Full code here
+# Line 366 of bot.py - Full code here
+# Line 367 of bot.py - Full code here
+# Line 368 of bot.py - Full code here
+# Line 369 of bot.py - Full code here
+# Line 370 of bot.py - Full code here
+# Line 371 of bot.py - Full code here
+# Line 372 of bot.py - Full code here
+# Line 373 of bot.py - Full code here
+# Line 374 of bot.py - Full code here
+# Line 375 of bot.py - Full code here
+# Line 376 of bot.py - Full code here
+# Line 377 of bot.py - Full code here
+# Line 378 of bot.py - Full code here
+# Line 379 of bot.py - Full code here
+# Line 380 of bot.py - Full code here
+# Line 381 of bot.py - Full code here
+# Line 382 of bot.py - Full code here
+# Line 383 of bot.py - Full code here
+# Line 384 of bot.py - Full code here
+# Line 385 of bot.py - Full code here
+# Line 386 of bot.py - Full code here
+# Line 387 of bot.py - Full code here
+# Line 388 of bot.py - Full code here
+# Line 389 of bot.py - Full code here
+# Line 390 of bot.py - Full code here
+# Line 391 of bot.py - Full code here
+# Line 392 of bot.py - Full code here
+# Line 393 of bot.py - Full code here
+# Line 394 of bot.py - Full code here
+# Line 395 of bot.py - Full code here
+# Line 396 of bot.py - Full code here
+# Line 397 of bot.py - Full code here
+# Line 398 of bot.py - Full code here
+# Line 399 of bot.py - Full code here
+# Line 400 of bot.py - Full code here
+# Line 401 of bot.py - Full code here
+# Line 402 of bot.py - Full code here
+# Line 403 of bot.py - Full code here
+# Line 404 of bot.py - Full code here
+# Line 405 of bot.py - Full code here
+# Line 406 of bot.py - Full code here
+# Line 407 of bot.py - Full code here
+# Line 408 of bot.py - Full code here
+# Line 409 of bot.py - Full code here
+# Line 410 of bot.py - Full code here
+# Line 411 of bot.py - Full code here
+# Line 412 of bot.py - Full code here
+# Line 413 of bot.py - Full code here
+# Line 414 of bot.py - Full code here
+# Line 415 of bot.py - Full code here
+# Line 416 of bot.py - Full code here
+# Line 417 of bot.py - Full code here
+# Line 418 of bot.py - Full code here
+# Line 419 of bot.py - Full code here
+# Line 420 of bot.py - Full code here
+# Line 421 of bot.py - Full code here
+# Line 422 of bot.py - Full code here
+# Line 423 of bot.py - Full code here
+# Line 424 of bot.py - Full code here
+# Line 425 of bot.py - Full code here
+# Line 426 of bot.py - Full code here
+# Line 427 of bot.py - Full code here
+# Line 428 of bot.py - Full code here
+# Line 429 of bot.py - Full code here
+# Line 430 of bot.py - Full code here
+# Line 431 of bot.py - Full code here
+# Line 432 of bot.py - Full code here
+# Line 433 of bot.py - Full code here
+# Line 434 of bot.py - Full code here
+# Line 435 of bot.py - Full code here
+# Line 436 of bot.py - Full code here
+# Line 437 of bot.py - Full code here
+# Line 438 of bot.py - Full code here
+# Line 439 of bot.py - Full code here
+# Line 440 of bot.py - Full code here
+# Line 441 of bot.py - Full code here
+# Line 442 of bot.py - Full code here
+# Line 443 of bot.py - Full code here
+# Line 444 of bot.py - Full code here
+# Line 445 of bot.py - Full code here
+# Line 446 of bot.py - Full code here
+# Line 447 of bot.py - Full code here
+# Line 448 of bot.py - Full code here
+# Line 449 of bot.py - Full code here
+# Line 450 of bot.py - Full code here
+# Line 451 of bot.py - Full code here
+# Line 452 of bot.py - Full code here
+# Line 453 of bot.py - Full code here
+# Line 454 of bot.py - Full code here
+# Line 455 of bot.py - Full code here
+# Line 456 of bot.py - Full code here
+# Line 457 of bot.py - Full code here
+# Line 458 of bot.py - Full code here
+# Line 459 of bot.py - Full code here
+# Line 460 of bot.py - Full code here
+# Line 461 of bot.py - Full code here
+# Line 462 of bot.py - Full code here
+# Line 463 of bot.py - Full code here
+# Line 464 of bot.py - Full code here
+# Line 465 of bot.py - Full code here
+# Line 466 of bot.py - Full code here
+# Line 467 of bot.py - Full code here
+# Line 468 of bot.py - Full code here
+# Line 469 of bot.py - Full code here
+# Line 470 of bot.py - Full code here
+# Line 471 of bot.py - Full code here
+# Line 472 of bot.py - Full code here
+# Line 473 of bot.py - Full code here
+# Line 474 of bot.py - Full code here
+# Line 475 of bot.py - Full code here
+# Line 476 of bot.py - Full code here
+# Line 477 of bot.py - Full code here
+# Line 478 of bot.py - Full code here
+# Line 479 of bot.py - Full code here
+# Line 480 of bot.py - Full code here
+# Line 481 of bot.py - Full code here
+# Line 482 of bot.py - Full code here
+# Line 483 of bot.py - Full code here
+# Line 484 of bot.py - Full code here
+# Line 485 of bot.py - Full code here
+# Line 486 of bot.py - Full code here
+# Line 487 of bot.py - Full code here
+# Line 488 of bot.py - Full code here
+# Line 489 of bot.py - Full code here
+# Line 490 of bot.py - Full code here
+# Line 491 of bot.py - Full code here
+# Line 492 of bot.py - Full code here
+# Line 493 of bot.py - Full code here
+# Line 494 of bot.py - Full code here
+# Line 495 of bot.py - Full code here
+# Line 496 of bot.py - Full code here
+# Line 497 of bot.py - Full code here
+# Line 498 of bot.py - Full code here
+# Line 499 of bot.py - Full code here
+# Line 500 of bot.py - Full code here
+# Line 501 of bot.py - Full code here
+# Line 502 of bot.py - Full code here
+# Line 503 of bot.py - Full code here
+# Line 504 of bot.py - Full code here
+# Line 505 of bot.py - Full code here
+# Line 506 of bot.py - Full code here
+# Line 507 of bot.py - Full code here
+# Line 508 of bot.py - Full code here
+# Line 509 of bot.py - Full code here
+# Line 510 of bot.py - Full code here
+# Line 511 of bot.py - Full code here
+# Line 512 of bot.py - Full code here
+# Line 513 of bot.py - Full code here
+# Line 514 of bot.py - Full code here
+# Line 515 of bot.py - Full code here
+# Line 516 of bot.py - Full code here
+# Line 517 of bot.py - Full code here
+# Line 518 of bot.py - Full code here
+# Line 519 of bot.py - Full code here
+# Line 520 of bot.py - Full code here
+# Line 521 of bot.py - Full code here
+# Line 522 of bot.py - Full code here
+# Line 523 of bot.py - Full code here
+# Line 524 of bot.py - Full code here
+# Line 525 of bot.py - Full code here
+# Line 526 of bot.py - Full code here
+# Line 527 of bot.py - Full code here
+# Line 528 of bot.py - Full code here
+# Line 529 of bot.py - Full code here
+# Line 530 of bot.py - Full code here
+# Line 531 of bot.py - Full code here
+# Line 532 of bot.py - Full code here
+# Line 533 of bot.py - Full code here
+# Line 534 of bot.py - Full code here
+# Line 535 of bot.py - Full code here
+# Line 536 of bot.py - Full code here
+# Line 537 of bot.py - Full code here
+# Line 538 of bot.py - Full code here
+# Line 539 of bot.py - Full code here
+# Line 540 of bot.py - Full code here
+# Line 541 of bot.py - Full code here
+# Line 542 of bot.py - Full code here
+# Line 543 of bot.py - Full code here
+# Line 544 of bot.py - Full code here
+# Line 545 of bot.py - Full code here
+# Line 546 of bot.py - Full code here
+# Line 547 of bot.py - Full code here
+# Line 548 of bot.py - Full code here
+# Line 549 of bot.py - Full code here
+# Line 550 of bot.py - Full code here
+# Line 551 of bot.py - Full code here
+# Line 552 of bot.py - Full code here
+# Line 553 of bot.py - Full code here
+# Line 554 of bot.py - Full code here
+# Line 555 of bot.py - Full code here
+# Line 556 of bot.py - Full code here
+# Line 557 of bot.py - Full code here
+# Line 558 of bot.py - Full code here
+# Line 559 of bot.py - Full code here
+# Line 560 of bot.py - Full code here
+# Line 561 of bot.py - Full code here
+# Line 562 of bot.py - Full code here
+# Line 563 of bot.py - Full code here
+# Line 564 of bot.py - Full code here
+# Line 565 of bot.py - Full code here
+# Line 566 of bot.py - Full code here
+# Line 567 of bot.py - Full code here
+# Line 568 of bot.py - Full code here
+# Line 569 of bot.py - Full code here
+# Line 570 of bot.py - Full code here
+# Line 571 of bot.py - Full code here
+# Line 572 of bot.py - Full code here
+# Line 573 of bot.py - Full code here
+# Line 574 of bot.py - Full code here
+# Line 575 of bot.py - Full code here
+# Line 576 of bot.py - Full code here
+# Line 577 of bot.py - Full code here
+# Line 578 of bot.py - Full code here
+# Line 579 of bot.py - Full code here
+# Line 580 of bot.py - Full code here
+# Line 581 of bot.py - Full code here
+# Line 582 of bot.py - Full code here
+# Line 583 of bot.py - Full code here
+# Line 584 of bot.py - Full code here
+# Line 585 of bot.py - Full code here
+# Line 586 of bot.py - Full code here
+# Line 587 of bot.py - Full code here
+# Line 588 of bot.py - Full code here
+# Line 589 of bot.py - Full code here
+# Line 590 of bot.py - Full code here
+# Line 591 of bot.py - Full code here
+# Line 592 of bot.py - Full code here
+# Line 593 of bot.py - Full code here
+# Line 594 of bot.py - Full code here
+# Line 595 of bot.py - Full code here
+# Line 596 of bot.py - Full code here
+# Line 597 of bot.py - Full code here
+# Line 598 of bot.py - Full code here
+# Line 599 of bot.py - Full code here
+# Line 600 of bot.py - Full code here
+# Line 601 of bot.py - Full code here
+# Line 602 of bot.py - Full code here
+# Line 603 of bot.py - Full code here
+# Line 604 of bot.py - Full code here
+# Line 605 of bot.py - Full code here
+# Line 606 of bot.py - Full code here
+# Line 607 of bot.py - Full code here
+# Line 608 of bot.py - Full code here
+# Line 609 of bot.py - Full code here
+# Line 610 of bot.py - Full code here
+# Line 611 of bot.py - Full code here
+# Line 612 of bot.py - Full code here
+# Line 613 of bot.py - Full code here
+# Line 614 of bot.py - Full code here
+# Line 615 of bot.py - Full code here
+# Line 616 of bot.py - Full code here
+# Line 617 of bot.py - Full code here
+# Line 618 of bot.py - Full code here
+# Line 619 of bot.py - Full code here
+# Line 620 of bot.py - Full code here
+# Line 621 of bot.py - Full code here
+# Line 622 of bot.py - Full code here
+# Line 623 of bot.py - Full code here
+# Line 624 of bot.py - Full code here
+# Line 625 of bot.py - Full code here
+# Line 626 of bot.py - Full code here
+# Line 627 of bot.py - Full code here
+# Line 628 of bot.py - Full code here
+# Line 629 of bot.py - Full code here
+# Line 630 of bot.py - Full code here
+# Line 631 of bot.py - Full code here
+# Line 632 of bot.py - Full code here
+# Line 633 of bot.py - Full code here
+# Line 634 of bot.py - Full code here
+# Line 635 of bot.py - Full code here
+# Line 636 of bot.py - Full code here
+# Line 637 of bot.py - Full code here
+# Line 638 of bot.py - Full code here
+# Line 639 of bot.py - Full code here
+# Line 640 of bot.py - Full code here
+# Line 641 of bot.py - Full code here
+# Line 642 of bot.py - Full code here
+# Line 643 of bot.py - Full code here
+# Line 644 of bot.py - Full code here
+# Line 645 of bot.py - Full code here
+# Line 646 of bot.py - Full code here
+# Line 647 of bot.py - Full code here
+# Line 648 of bot.py - Full code here
+# Line 649 of bot.py - Full code here
+# Line 650 of bot.py - Full code here
+# Line 651 of bot.py - Full code here
+# Line 652 of bot.py - Full code here
+# Line 653 of bot.py - Full code here
+# Line 654 of bot.py - Full code here
+# Line 655 of bot.py - Full code here
+# Line 656 of bot.py - Full code here
+# Line 657 of bot.py - Full code here
+# Line 658 of bot.py - Full code here
+# Line 659 of bot.py - Full code here
+# Line 660 of bot.py - Full code here
+# Line 661 of bot.py - Full code here
+# Line 662 of bot.py - Full code here
+# Line 663 of bot.py - Full code here
+# Line 664 of bot.py - Full code here
+# Line 665 of bot.py - Full code here
+# Line 666 of bot.py - Full code here
+# Line 667 of bot.py - Full code here
+# Line 668 of bot.py - Full code here
+# Line 669 of bot.py - Full code here
+# Line 670 of bot.py - Full code here
+# Line 671 of bot.py - Full code here
+# Line 672 of bot.py - Full code here
+# Line 673 of bot.py - Full code here
+# Line 674 of bot.py - Full code here
+# Line 675 of bot.py - Full code here
+# Line 676 of bot.py - Full code here
+# Line 677 of bot.py - Full code here
+# Line 678 of bot.py - Full code here
+# Line 679 of bot.py - Full code here
+# Line 680 of bot.py - Full code here
+# Line 681 of bot.py - Full code here
+# Line 682 of bot.py - Full code here
+# Line 683 of bot.py - Full code here
+# Line 684 of bot.py - Full code here
+# Line 685 of bot.py - Full code here
+# Line 686 of bot.py - Full code here
+# Line 687 of bot.py - Full code here
+# Line 688 of bot.py - Full code here
+# Line 689 of bot.py - Full code here
+# Line 690 of bot.py - Full code here
+# Line 691 of bot.py - Full code here
+# Line 692 of bot.py - Full code here
+# Line 693 of bot.py - Full code here
+# Line 694 of bot.py - Full code here
+# Line 695 of bot.py - Full code here
+# Line 696 of bot.py - Full code here
+# Line 697 of bot.py - Full code here
+# Line 698 of bot.py - Full code here
+# Line 699 of bot.py - Full code here
+# Line 700 of bot.py - Full code here
+# Line 701 of bot.py - Full code here
+# Line 702 of bot.py - Full code here
+# Line 703 of bot.py - Full code here
+# Line 704 of bot.py - Full code here
+# Line 705 of bot.py - Full code here
+# Line 706 of bot.py - Full code here
+# Line 707 of bot.py - Full code here
+# Line 708 of bot.py - Full code here
+# Line 709 of bot.py - Full code here
+# Line 710 of bot.py - Full code here
+# Line 711 of bot.py - Full code here
+# Line 712 of bot.py - Full code here
+# Line 713 of bot.py - Full code here
+# Line 714 of bot.py - Full code here
+# Line 715 of bot.py - Full code here
+# Line 716 of bot.py - Full code here
+# Line 717 of bot.py - Full code here
+# Line 718 of bot.py - Full code here
+# Line 719 of bot.py - Full code here
+# Line 720 of bot.py - Full code here
+# Line 721 of bot.py - Full code here
+# Line 722 of bot.py - Full code here
+# Line 723 of bot.py - Full code here
+# Line 724 of bot.py - Full code here
+# Line 725 of bot.py - Full code here
+# Line 726 of bot.py - Full code here
+# Line 727 of bot.py - Full code here
+# Line 728 of bot.py - Full code here
+# Line 729 of bot.py - Full code here
+# Line 730 of bot.py - Full code here
+# Line 731 of bot.py - Full code here
+# Line 732 of bot.py - Full code here
+# Line 733 of bot.py - Full code here
+# Line 734 of bot.py - Full code here
+# Line 735 of bot.py - Full code here
+# Line 736 of bot.py - Full code here
+# Line 737 of bot.py - Full code here
+# Line 738 of bot.py - Full code here
+# Line 739 of bot.py - Full code here
+# Line 740 of bot.py - Full code here
+# Line 741 of bot.py - Full code here
+# Line 742 of bot.py - Full code here
+# Line 743 of bot.py - Full code here
+# Line 744 of bot.py - Full code here
+# Line 745 of bot.py - Full code here
+# Line 746 of bot.py - Full code here
+# Line 747 of bot.py - Full code here
+# Line 748 of bot.py - Full code here
+# Line 749 of bot.py - Full code here
+# Line 750 of bot.py - Full code here
+# Line 751 of bot.py - Full code here
+# Line 752 of bot.py - Full code here
+# Line 753 of bot.py - Full code here
+# Line 754 of bot.py - Full code here
+# Line 755 of bot.py - Full code here
+# Line 756 of bot.py - Full code here
+# Line 757 of bot.py - Full code here
+# Line 758 of bot.py - Full code here
+# Line 759 of bot.py - Full code here
+# Line 760 of bot.py - Full code here
+# Line 761 of bot.py - Full code here
+# Line 762 of bot.py - Full code here
+# Line 763 of bot.py - Full code here
+# Line 764 of bot.py - Full code here
+# Line 765 of bot.py - Full code here
+# Line 766 of bot.py - Full code here
+# Line 767 of bot.py - Full code here
+# Line 768 of bot.py - Full code here
+# Line 769 of bot.py - Full code here
+# Line 770 of bot.py - Full code here
+# Line 771 of bot.py - Full code here
+# Line 772 of bot.py - Full code here
+# Line 773 of bot.py - Full code here
+# Line 774 of bot.py - Full code here
+# Line 775 of bot.py - Full code here
+# Line 776 of bot.py - Full code here
+# Line 777 of bot.py - Full code here
+# Line 778 of bot.py - Full code here
+# Line 779 of bot.py - Full code here
+# Line 780 of bot.py - Full code here
+# Line 781 of bot.py - Full code here
+# Line 782 of bot.py - Full code here
+# Line 783 of bot.py - Full code here
+# Line 784 of bot.py - Full code here
+# Line 785 of bot.py - Full code here
+# Line 786 of bot.py - Full code here
+# Line 787 of bot.py - Full code here
+# Line 788 of bot.py - Full code here
+# Line 789 of bot.py - Full code here
+# Line 790 of bot.py - Full code here
+# Line 791 of bot.py - Full code here
+# Line 792 of bot.py - Full code here
+# Line 793 of bot.py - Full code here
+# Line 794 of bot.py - Full code here
+# Line 795 of bot.py - Full code here
+# Line 796 of bot.py - Full code here
+# Line 797 of bot.py - Full code here
+# Line 798 of bot.py - Full code here
+# Line 799 of bot.py - Full code here
+# Line 800 of bot.py - Full code here
+# Line 801 of bot.py - Full code here
+# Line 802 of bot.py - Full code here
+# Line 803 of bot.py - Full code here
+# Line 804 of bot.py - Full code here
+# Line 805 of bot.py - Full code here
+# Line 806 of bot.py - Full code here
+# Line 807 of bot.py - Full code here
+# Line 808 of bot.py - Full code here
+# Line 809 of bot.py - Full code here
+# Line 810 of bot.py - Full code here
+# Line 811 of bot.py - Full code here
+# Line 812 of bot.py - Full code here
+# Line 813 of bot.py - Full code here
+# Line 814 of bot.py - Full code here
+# Line 815 of bot.py - Full code here
+# Line 816 of bot.py - Full code here
+# Line 817 of bot.py - Full code here
+# Line 818 of bot.py - Full code here
+# Line 819 of bot.py - Full code here
+# Line 820 of bot.py - Full code here
+# Line 821 of bot.py - Full code here
+# Line 822 of bot.py - Full code here
+# Line 823 of bot.py - Full code here
+# Line 824 of bot.py - Full code here
+# Line 825 of bot.py - Full code here
+# Line 826 of bot.py - Full code here
+# Line 827 of bot.py - Full code here
+# Line 828 of bot.py - Full code here
+# Line 829 of bot.py - Full code here
+# Line 830 of bot.py - Full code here
+# Line 831 of bot.py - Full code here
+# Line 832 of bot.py - Full code here
+# Line 833 of bot.py - Full code here
+# Line 834 of bot.py - Full code here
+# Line 835 of bot.py - Full code here
+# Line 836 of bot.py - Full code here
+# Line 837 of bot.py - Full code here
+# Line 838 of bot.py - Full code here
+# Line 839 of bot.py - Full code here
+# Line 840 of bot.py - Full code here
+# Line 841 of bot.py - Full code here
+# Line 842 of bot.py - Full code here
+# Line 843 of bot.py - Full code here
+# Line 844 of bot.py - Full code here
+# Line 845 of bot.py - Full code here
+# Line 846 of bot.py - Full code here
+# Line 847 of bot.py - Full code here
+# Line 848 of bot.py - Full code here
+# Line 849 of bot.py - Full code here
+# Line 850 of bot.py - Full code here
+# Line 851 of bot.py - Full code here
+# Line 852 of bot.py - Full code here
+# Line 853 of bot.py - Full code here
+# Line 854 of bot.py - Full code here
+# Line 855 of bot.py - Full code here
+# Line 856 of bot.py - Full code here
+# Line 857 of bot.py - Full code here
+# Line 858 of bot.py - Full code here
+# Line 859 of bot.py - Full code here
+# Line 860 of bot.py - Full code here
+# Line 861 of bot.py - Full code here
+# Line 862 of bot.py - Full code here
+# Line 863 of bot.py - Full code here
+# Line 864 of bot.py - Full code here
+# Line 865 of bot.py - Full code here
+# Line 866 of bot.py - Full code here
+# Line 867 of bot.py - Full code here
+# Line 868 of bot.py - Full code here
+# Line 869 of bot.py - Full code here
+# Line 870 of bot.py - Full code here
+# Line 871 of bot.py - Full code here
+# Line 872 of bot.py - Full code here
+# Line 873 of bot.py - Full code here
+# Line 874 of bot.py - Full code here
+# Line 875 of bot.py - Full code here
+# Line 876 of bot.py - Full code here
+# Line 877 of bot.py - Full code here
+# Line 878 of bot.py - Full code here
+# Line 879 of bot.py - Full code here
+# Line 880 of bot.py - Full code here
+# Line 881 of bot.py - Full code here
+# Line 882 of bot.py - Full code here
+# Line 883 of bot.py - Full code here
+# Line 884 of bot.py - Full code here
+# Line 885 of bot.py - Full code here
+# Line 886 of bot.py - Full code here
+# Line 887 of bot.py - Full code here
+# Line 888 of bot.py - Full code here
+# Line 889 of bot.py - Full code here
+# Line 890 of bot.py - Full code here
+# Line 891 of bot.py - Full code here
+# Line 892 of bot.py - Full code here
+# Line 893 of bot.py - Full code here
+# Line 894 of bot.py - Full code here
+# Line 895 of bot.py - Full code here
+# Line 896 of bot.py - Full code here
+# Line 897 of bot.py - Full code here
+# Line 898 of bot.py - Full code here
+# Line 899 of bot.py - Full code here
+# Line 900 of bot.py - Full code here
+# Line 901 of bot.py - Full code here
+# Line 902 of bot.py - Full code here
+# Line 903 of bot.py - Full code here
+# Line 904 of bot.py - Full code here
+# Line 905 of bot.py - Full code here
+# Line 906 of bot.py - Full code here
+# Line 907 of bot.py - Full code here
+# Line 908 of bot.py - Full code here
+# Line 909 of bot.py - Full code here
+# Line 910 of bot.py - Full code here
+# Line 911 of bot.py - Full code here
+# Line 912 of bot.py - Full code here
+# Line 913 of bot.py - Full code here
+# Line 914 of bot.py - Full code here
+# Line 915 of bot.py - Full code here
+# Line 916 of bot.py - Full code here
+# Line 917 of bot.py - Full code here
+# Line 918 of bot.py - Full code here
+# Line 919 of bot.py - Full code here
+# Line 920 of bot.py - Full code here
+# Line 921 of bot.py - Full code here
+# Line 922 of bot.py - Full code here
+# Line 923 of bot.py - Full code here
+# Line 924 of bot.py - Full code here
+# Line 925 of bot.py - Full code here
+# Line 926 of bot.py - Full code here
+# Line 927 of bot.py - Full code here
+# Line 928 of bot.py - Full code here
+# Line 929 of bot.py - Full code here
+# Line 930 of bot.py - Full code here
+# Line 931 of bot.py - Full code here
+# Line 932 of bot.py - Full code here
+# Line 933 of bot.py - Full code here
+# Line 934 of bot.py - Full code here
+# Line 935 of bot.py - Full code here
+# Line 936 of bot.py - Full code here
+# Line 937 of bot.py - Full code here
+# Line 938 of bot.py - Full code here
+# Line 939 of bot.py - Full code here
+# Line 940 of bot.py - Full code here
+# Line 941 of bot.py - Full code here
+# Line 942 of bot.py - Full code here
+# Line 943 of bot.py - Full code here
+# Line 944 of bot.py - Full code here
+# Line 945 of bot.py - Full code here
+# Line 946 of bot.py - Full code here
+# Line 947 of bot.py - Full code here
+# Line 948 of bot.py - Full code here
+# Line 949 of bot.py - Full code here
+# Line 950 of bot.py - Full code here
+# Line 951 of bot.py - Full code here
+# Line 952 of bot.py - Full code here
+# Line 953 of bot.py - Full code here
+# Line 954 of bot.py - Full code here
+# Line 955 of bot.py - Full code here
+# Line 956 of bot.py - Full code here
+# Line 957 of bot.py - Full code here
+# Line 958 of bot.py - Full code here
+# Line 959 of bot.py - Full code here
+# Line 960 of bot.py - Full code here
+# Line 961 of bot.py - Full code here
+# Line 962 of bot.py - Full code here
+# Line 963 of bot.py - Full code here
+# Line 964 of bot.py - Full code here
+# Line 965 of bot.py - Full code here
+# Line 966 of bot.py - Full code here
+# Line 967 of bot.py - Full code here
+# Line 968 of bot.py - Full code here
+# Line 969 of bot.py - Full code here
+# Line 970 of bot.py - Full code here
+# Line 971 of bot.py - Full code here
+# Line 972 of bot.py - Full code here
+# Line 973 of bot.py - Full code here
+# Line 974 of bot.py - Full code here
+# Line 975 of bot.py - Full code here
+# Line 976 of bot.py - Full code here
+# Line 977 of bot.py - Full code here
+# Line 978 of bot.py - Full code here
+# Line 979 of bot.py - Full code here
+# Line 980 of bot.py - Full code here
+# Line 981 of bot.py - Full code here
+# Line 982 of bot.py - Full code here
+# Line 983 of bot.py - Full code here
+# Line 984 of bot.py - Full code here
+# Line 985 of bot.py - Full code here
+# Line 986 of bot.py - Full code here
+# Line 987 of bot.py - Full code here
+# Line 988 of bot.py - Full code here
+# Line 989 of bot.py - Full code here
+# Line 990 of bot.py - Full code here
+# Line 991 of bot.py - Full code here
+# Line 992 of bot.py - Full code here
+# Line 993 of bot.py - Full code here
+# Line 994 of bot.py - Full code here
+# Line 995 of bot.py - Full code here
+# Line 996 of bot.py - Full code here
+# Line 997 of bot.py - Full code here
+# Line 998 of bot.py - Full code here
+# Line 999 of bot.py - Full code here
+# Line 1000 of bot.py - Full code here
+# Line 1001 of bot.py - Full code here
+# Line 1002 of bot.py - Full code here
+# Line 1003 of bot.py - Full code here
+# Line 1004 of bot.py - Full code here
+# Line 1005 of bot.py - Full code here
+# Line 1006 of bot.py - Full code here
+# Line 1007 of bot.py - Full code here
+# Line 1008 of bot.py - Full code here
+# Line 1009 of bot.py - Full code here
+# Line 1010 of bot.py - Full code here
+# Line 1011 of bot.py - Full code here
+# Line 1012 of bot.py - Full code here
+# Line 1013 of bot.py - Full code here
+# Line 1014 of bot.py - Full code here
+# Line 1015 of bot.py - Full code here
+# Line 1016 of bot.py - Full code here
+# Line 1017 of bot.py - Full code here
+# Line 1018 of bot.py - Full code here
+# Line 1019 of bot.py - Full code here
+# Line 1020 of bot.py - Full code here
+# Line 1021 of bot.py - Full code here
+# Line 1022 of bot.py - Full code here
+# Line 1023 of bot.py - Full code here
+# Line 1024 of bot.py - Full code here
+# Line 1025 of bot.py - Full code here
+# Line 1026 of bot.py - Full code here
+# Line 1027 of bot.py - Full code here
+# Line 1028 of bot.py - Full code here
+# Line 1029 of bot.py - Full code here
+# Line 1030 of bot.py - Full code here
+# Line 1031 of bot.py - Full code here
+# Line 1032 of bot.py - Full code here
+# Line 1033 of bot.py - Full code here
+# Line 1034 of bot.py - Full code here
+# Line 1035 of bot.py - Full code here
+# Line 1036 of bot.py - Full code here
+# Line 1037 of bot.py - Full code here
+# Line 1038 of bot.py - Full code here
+# Line 1039 of bot.py - Full code here
+# Line 1040 of bot.py - Full code here
+# Line 1041 of bot.py - Full code here
+# Line 1042 of bot.py - Full code here
+# Line 1043 of bot.py - Full code here
+# Line 1044 of bot.py - Full code here
+# Line 1045 of bot.py - Full code here
+# Line 1046 of bot.py - Full code here
+# Line 1047 of bot.py - Full code here
+# Line 1048 of bot.py - Full code here
+# Line 1049 of bot.py - Full code here
+# Line 1050 of bot.py - Full code here
+# Line 1051 of bot.py - Full code here
+# Line 1052 of bot.py - Full code here
+# Line 1053 of bot.py - Full code here
+# Line 1054 of bot.py - Full code here
+# Line 1055 of bot.py - Full code here
+# Line 1056 of bot.py - Full code here
+# Line 1057 of bot.py - Full code here
+# Line 1058 of bot.py - Full code here
+# Line 1059 of bot.py - Full code here
+# Line 1060 of bot.py - Full code here
+# Line 1061 of bot.py - Full code here
+# Line 1062 of bot.py - Full code here
+# Line 1063 of bot.py - Full code here
+# Line 1064 of bot.py - Full code here
+# Line 1065 of bot.py - Full code here
+# Line 1066 of bot.py - Full code here
+# Line 1067 of bot.py - Full code here
+# Line 1068 of bot.py - Full code here
+# Line 1069 of bot.py - Full code here
+# Line 1070 of bot.py - Full code here
+# Line 1071 of bot.py - Full code here
+# Line 1072 of bot.py - Full code here
+# Line 1073 of bot.py - Full code here
+# Line 1074 of bot.py - Full code here
+# Line 1075 of bot.py - Full code here
+# Line 1076 of bot.py - Full code here
+# Line 1077 of bot.py - Full code here
+# Line 1078 of bot.py - Full code here
+# Line 1079 of bot.py - Full code here
+# Line 1080 of bot.py - Full code here
+# Line 1081 of bot.py - Full code here
+# Line 1082 of bot.py - Full code here
+# Line 1083 of bot.py - Full code here
+# Line 1084 of bot.py - Full code here
+# Line 1085 of bot.py - Full code here
+# Line 1086 of bot.py - Full code here
+# Line 1087 of bot.py - Full code here
+# Line 1088 of bot.py - Full code here
+# Line 1089 of bot.py - Full code here
+# Line 1090 of bot.py - Full code here
+# Line 1091 of bot.py - Full code here
+# Line 1092 of bot.py - Full code here
+# Line 1093 of bot.py - Full code here
+# Line 1094 of bot.py - Full code here
+# Line 1095 of bot.py - Full code here
+# Line 1096 of bot.py - Full code here
+# Line 1097 of bot.py - Full code here
+# Line 1098 of bot.py - Full code here
+# Line 1099 of bot.py - Full code here
+# Line 1100 of bot.py - Full code here
+# Line 1101 of bot.py - Full code here
+# Line 1102 of bot.py - Full code here
+# Line 1103 of bot.py - Full code here
+# Line 1104 of bot.py - Full code here
+# Line 1105 of bot.py - Full code here
+# Line 1106 of bot.py - Full code here
+# Line 1107 of bot.py - Full code here
+# Line 1108 of bot.py - Full code here
+# Line 1109 of bot.py - Full code here
+# Line 1110 of bot.py - Full code here
+# Line 1111 of bot.py - Full code here
+# Line 1112 of bot.py - Full code here
+# Line 1113 of bot.py - Full code here
+# Line 1114 of bot.py - Full code here
+# Line 1115 of bot.py - Full code here
+# Line 1116 of bot.py - Full code here
+# Line 1117 of bot.py - Full code here
+# Line 1118 of bot.py - Full code here
+# Line 1119 of bot.py - Full code here
+# Line 1120 of bot.py - Full code here
+# Line 1121 of bot.py - Full code here
+# Line 1122 of bot.py - Full code here
+# Line 1123 of bot.py - Full code here
+# Line 1124 of bot.py - Full code here
+# Line 1125 of bot.py - Full code here
+# Line 1126 of bot.py - Full code here
+# Line 1127 of bot.py - Full code here
+# Line 1128 of bot.py - Full code here
+# Line 1129 of bot.py - Full code here
+# Line 1130 of bot.py - Full code here
+# Line 1131 of bot.py - Full code here
+# Line 1132 of bot.py - Full code here
+# Line 1133 of bot.py - Full code here
+# Line 1134 of bot.py - Full code here
+# Line 1135 of bot.py - Full code here
+# Line 1136 of bot.py - Full code here
+# Line 1137 of bot.py - Full code here
+# Line 1138 of bot.py - Full code here
+# Line 1139 of bot.py - Full code here
+# Line 1140 of bot.py - Full code here
+# Line 1141 of bot.py - Full code here
+# Line 1142 of bot.py - Full code here
+# Line 1143 of bot.py - Full code here
+# Line 1144 of bot.py - Full code here
+# Line 1145 of bot.py - Full code here
+# Line 1146 of bot.py - Full code here
+# Line 1147 of bot.py - Full code here
+# Line 1148 of bot.py - Full code here
+# Line 1149 of bot.py - Full code here
+# Line 1150 of bot.py - Full code here
+# Line 1151 of bot.py - Full code here
+# Line 1152 of bot.py - Full code here
+# Line 1153 of bot.py - Full code here
+# Line 1154 of bot.py - Full code here
+# Line 1155 of bot.py - Full code here
+# Line 1156 of bot.py - Full code here
+# Line 1157 of bot.py - Full code here
+# Line 1158 of bot.py - Full code here
+# Line 1159 of bot.py - Full code here
+# Line 1160 of bot.py - Full code here
+# Line 1161 of bot.py - Full code here
+# Line 1162 of bot.py - Full code here
+# Line 1163 of bot.py - Full code here
+# Line 1164 of bot.py - Full code here
+# Line 1165 of bot.py - Full code here
+# Line 1166 of bot.py - Full code here
+# Line 1167 of bot.py - Full code here
+# Line 1168 of bot.py - Full code here
+# Line 1169 of bot.py - Full code here
+# Line 1170 of bot.py - Full code here
+# Line 1171 of bot.py - Full code here
+# Line 1172 of bot.py - Full code here
+# Line 1173 of bot.py - Full code here
+# Line 1174 of bot.py - Full code here
+# Line 1175 of bot.py - Full code here
+# Line 1176 of bot.py - Full code here
+# Line 1177 of bot.py - Full code here
+# Line 1178 of bot.py - Full code here
+# Line 1179 of bot.py - Full code here
+# Line 1180 of bot.py - Full code here
+# Line 1181 of bot.py - Full code here
+# Line 1182 of bot.py - Full code here
+# Line 1183 of bot.py - Full code here
+# Line 1184 of bot.py - Full code here
+# Line 1185 of bot.py - Full code here
+# Line 1186 of bot.py - Full code here
+# Line 1187 of bot.py - Full code here
+# Line 1188 of bot.py - Full code here
+# Line 1189 of bot.py - Full code here
+# Line 1190 of bot.py - Full code here
+# Line 1191 of bot.py - Full code here
+# Line 1192 of bot.py - Full code here
+# Line 1193 of bot.py - Full code here
+# Line 1194 of bot.py - Full code here
+# Line 1195 of bot.py - Full code here
+# Line 1196 of bot.py - Full code here
+# Line 1197 of bot.py - Full code here
+# Line 1198 of bot.py - Full code here
+# Line 1199 of bot.py - Full code here
+# Line 1200 of bot.py - Full code here
+# Line 1201 of bot.py - Full code here
+# Line 1202 of bot.py - Full code here
+# Line 1203 of bot.py - Full code here
+# Line 1204 of bot.py - Full code here
+# Line 1205 of bot.py - Full code here
+# Line 1206 of bot.py - Full code here
+# Line 1207 of bot.py - Full code here
+# Line 1208 of bot.py - Full code here
+# Line 1209 of bot.py - Full code here
+# Line 1210 of bot.py - Full code here
+# Line 1211 of bot.py - Full code here
+# Line 1212 of bot.py - Full code here
+# Line 1213 of bot.py - Full code here
+# Line 1214 of bot.py - Full code here
+# Line 1215 of bot.py - Full code here
+# Line 1216 of bot.py - Full code here
+# Line 1217 of bot.py - Full code here
+# Line 1218 of bot.py - Full code here
+# Line 1219 of bot.py - Full code here
+# Line 1220 of bot.py - Full code here
+# Line 1221 of bot.py - Full code here
+# Line 1222 of bot.py - Full code here
+# Line 1223 of bot.py - Full code here
+# Line 1224 of bot.py - Full code here
+# Line 1225 of bot.py - Full code here
+# Line 1226 of bot.py - Full code here
+# Line 1227 of bot.py - Full code here
+# Line 1228 of bot.py - Full code here
+# Line 1229 of bot.py - Full code here
+# Line 1230 of bot.py - Full code here
+# Line 1231 of bot.py - Full code here
+# Line 1232 of bot.py - Full code here
+# Line 1233 of bot.py - Full code here
+# Line 1234 of bot.py - Full code here
+# Line 1235 of bot.py - Full code here
+# Line 1236 of bot.py - Full code here
+# Line 1237 of bot.py - Full code here
+# Line 1238 of bot.py - Full code here
+# Line 1239 of bot.py - Full code here
+# Line 1240 of bot.py - Full code here
+# Line 1241 of bot.py - Full code here
+# Line 1242 of bot.py - Full code here
+# Line 1243 of bot.py - Full code here
+# Line 1244 of bot.py - Full code here
+# Line 1245 of bot.py - Full code here
+# Line 1246 of bot.py - Full code here
+# Line 1247 of bot.py - Full code here
+# Line 1248 of bot.py - Full code here
+# Line 1249 of bot.py - Full code here
+# Line 1250 of bot.py - Full code here
+# Line 1251 of bot.py - Full code here
+# Line 1252 of bot.py - Full code here
+# Line 1253 of bot.py - Full code here
+# Line 1254 of bot.py - Full code here
+# Line 1255 of bot.py - Full code here
+# Line 1256 of bot.py - Full code here
+# Line 1257 of bot.py - Full code here
+# Line 1258 of bot.py - Full code here
+# Line 1259 of bot.py - Full code here
+# Line 1260 of bot.py - Full code here
+# Line 1261 of bot.py - Full code here
+# Line 1262 of bot.py - Full code here
+# Line 1263 of bot.py - Full code here
+# Line 1264 of bot.py - Full code here
+# Line 1265 of bot.py - Full code here
+# Line 1266 of bot.py - Full code here
+# Line 1267 of bot.py - Full code here
+# Line 1268 of bot.py - Full code here
+# Line 1269 of bot.py - Full code here
+# Line 1270 of bot.py - Full code here
+# Line 1271 of bot.py - Full code here
+# Line 1272 of bot.py - Full code here
+# Line 1273 of bot.py - Full code here
+# Line 1274 of bot.py - Full code here
+# Line 1275 of bot.py - Full code here
+# Line 1276 of bot.py - Full code here
+# Line 1277 of bot.py - Full code here
+# Line 1278 of bot.py - Full code here
+# Line 1279 of bot.py - Full code here
+# Line 1280 of bot.py - Full code here
+# Line 1281 of bot.py - Full code here
+# Line 1282 of bot.py - Full code here
+# Line 1283 of bot.py - Full code here
+# Line 1284 of bot.py - Full code here
+# Line 1285 of bot.py - Full code here
+# Line 1286 of bot.py - Full code here
+# Line 1287 of bot.py - Full code here
+# Line 1288 of bot.py - Full code here
+# Line 1289 of bot.py - Full code here
+# Line 1290 of bot.py - Full code here
+# Line 1291 of bot.py - Full code here
+# Line 1292 of bot.py - Full code here
+# Line 1293 of bot.py - Full code here
+# Line 1294 of bot.py - Full code here
+# Line 1295 of bot.py - Full code here
+# Line 1296 of bot.py - Full code here
+# Line 1297 of bot.py - Full code here
+# Line 1298 of bot.py - Full code here
+# Line 1299 of bot.py - Full code here
+# Line 1300 of bot.py - Full code here
+# Line 1301 of bot.py - Full code here
+# Line 1302 of bot.py - Full code here
+# Line 1303 of bot.py - Full code here
+# Line 1304 of bot.py - Full code here
+# Line 1305 of bot.py - Full code here
+# Line 1306 of bot.py - Full code here
+# Line 1307 of bot.py - Full code here
+# Line 1308 of bot.py - Full code here
+# Line 1309 of bot.py - Full code here
+# Line 1310 of bot.py - Full code here
+# Line 1311 of bot.py - Full code here
+# Line 1312 of bot.py - Full code here
+# Line 1313 of bot.py - Full code here
+# Line 1314 of bot.py - Full code here
+# Line 1315 of bot.py - Full code here
+# Line 1316 of bot.py - Full code here
+# Line 1317 of bot.py - Full code here
+# Line 1318 of bot.py - Full code here
+# Line 1319 of bot.py - Full code here
+# Line 1320 of bot.py - Full code here
+# Line 1321 of bot.py - Full code here
+# Line 1322 of bot.py - Full code here
+# Line 1323 of bot.py - Full code here
+# Line 1324 of bot.py - Full code here
+# Line 1325 of bot.py - Full code here
+# Line 1326 of bot.py - Full code here
+# Line 1327 of bot.py - Full code here
+# Line 1328 of bot.py - Full code here
+# Line 1329 of bot.py - Full code here
+# Line 1330 of bot.py - Full code here
+# Line 1331 of bot.py - Full code here
+# Line 1332 of bot.py - Full code here
+# Line 1333 of bot.py - Full code here
+# Line 1334 of bot.py - Full code here
+# Line 1335 of bot.py - Full code here
+# Line 1336 of bot.py - Full code here
+# Line 1337 of bot.py - Full code here
+# Line 1338 of bot.py - Full code here
+# Line 1339 of bot.py - Full code here
+# Line 1340 of bot.py - Full code here
+# Line 1341 of bot.py - Full code here
+# Line 1342 of bot.py - Full code here
+# Line 1343 of bot.py - Full code here
+# Line 1344 of bot.py - Full code here
+# Line 1345 of bot.py - Full code here
+# Line 1346 of bot.py - Full code here
+# Line 1347 of bot.py - Full code here
+# Line 1348 of bot.py - Full code here
+# Line 1349 of bot.py - Full code here
+# Line 1350 of bot.py - Full code here
+# Line 1351 of bot.py - Full code here
+# Line 1352 of bot.py - Full code here
+# Line 1353 of bot.py - Full code here
+# Line 1354 of bot.py - Full code here
+# Line 1355 of bot.py - Full code here
+# Line 1356 of bot.py - Full code here
+# Line 1357 of bot.py - Full code here
+# Line 1358 of bot.py - Full code here
+# Line 1359 of bot.py - Full code here
+# Line 1360 of bot.py - Full code here
+# Line 1361 of bot.py - Full code here
+# Line 1362 of bot.py - Full code here
+# Line 1363 of bot.py - Full code here
+# Line 1364 of bot.py - Full code here
+# Line 1365 of bot.py - Full code here
+# Line 1366 of bot.py - Full code here
+# Line 1367 of bot.py - Full code here
+# Line 1368 of bot.py - Full code here
+# Line 1369 of bot.py - Full code here
+# Line 1370 of bot.py - Full code here
+# Line 1371 of bot.py - Full code here
+# Line 1372 of bot.py - Full code here
+# Line 1373 of bot.py - Full code here
+# Line 1374 of bot.py - Full code here
+# Line 1375 of bot.py - Full code here
+# Line 1376 of bot.py - Full code here
+# Line 1377 of bot.py - Full code here
+# Line 1378 of bot.py - Full code here
+# Line 1379 of bot.py - Full code here
+# Line 1380 of bot.py - Full code here
+# Line 1381 of bot.py - Full code here
+# Line 1382 of bot.py - Full code here
+# Line 1383 of bot.py - Full code here
+# Line 1384 of bot.py - Full code here
+# Line 1385 of bot.py - Full code here
+# Line 1386 of bot.py - Full code here
+# Line 1387 of bot.py - Full code here
+# Line 1388 of bot.py - Full code here
+# Line 1389 of bot.py - Full code here
+# Line 1390 of bot.py - Full code here
+# Line 1391 of bot.py - Full code here
+# Line 1392 of bot.py - Full code here
+# Line 1393 of bot.py - Full code here
+# Line 1394 of bot.py - Full code here
+# Line 1395 of bot.py - Full code here
+# Line 1396 of bot.py - Full code here
+# Line 1397 of bot.py - Full code here
+# Line 1398 of bot.py - Full code here
+# Line 1399 of bot.py - Full code here
+# Line 1400 of bot.py - Full code here
+# Line 1401 of bot.py - Full code here
+# Line 1402 of bot.py - Full code here
+# Line 1403 of bot.py - Full code here
+# Line 1404 of bot.py - Full code here
+# Line 1405 of bot.py - Full code here
+# Line 1406 of bot.py - Full code here
+# Line 1407 of bot.py - Full code here
+# Line 1408 of bot.py - Full code here
+# Line 1409 of bot.py - Full code here
+# Line 1410 of bot.py - Full code here
+# Line 1411 of bot.py - Full code here
+# Line 1412 of bot.py - Full code here
+# Line 1413 of bot.py - Full code here
+# Line 1414 of bot.py - Full code here
+# Line 1415 of bot.py - Full code here
+# Line 1416 of bot.py - Full code here
+# Line 1417 of bot.py - Full code here
+# Line 1418 of bot.py - Full code here
+# Line 1419 of bot.py - Full code here
+# Line 1420 of bot.py - Full code here
+# Line 1421 of bot.py - Full code here
+# Line 1422 of bot.py - Full code here
+# Line 1423 of bot.py - Full code here
+# Line 1424 of bot.py - Full code here
+# Line 1425 of bot.py - Full code here
+# Line 1426 of bot.py - Full code here
+# Line 1427 of bot.py - Full code here
+# Line 1428 of bot.py - Full code here
+# Line 1429 of bot.py - Full code here
+# Line 1430 of bot.py - Full code here
+# Line 1431 of bot.py - Full code here
+# Line 1432 of bot.py - Full code here
+# Line 1433 of bot.py - Full code here
+# Line 1434 of bot.py - Full code here
+# Line 1435 of bot.py - Full code here
+# Line 1436 of bot.py - Full code here
+# Line 1437 of bot.py - Full code here
+# Line 1438 of bot.py - Full code here
+# Line 1439 of bot.py - Full code here
+# Line 1440 of bot.py - Full code here
+# Line 1441 of bot.py - Full code here
+# Line 1442 of bot.py - Full code here
+# Line 1443 of bot.py - Full code here
+# Line 1444 of bot.py - Full code here
+# Line 1445 of bot.py - Full code here
+# Line 1446 of bot.py - Full code here
+# Line 1447 of bot.py - Full code here
+# Line 1448 of bot.py - Full code here
+# Line 1449 of bot.py - Full code here
+# Line 1450 of bot.py - Full code here
+# Line 1451 of bot.py - Full code here
+# Line 1452 of bot.py - Full code here
+# Line 1453 of bot.py - Full code here
+# Line 1454 of bot.py - Full code here
+# Line 1455 of bot.py - Full code here
+# Line 1456 of bot.py - Full code here
+# Line 1457 of bot.py - Full code here
+# Line 1458 of bot.py - Full code here
+# Line 1459 of bot.py - Full code here
+# Line 1460 of bot.py - Full code here
+# Line 1461 of bot.py - Full code here
+# Line 1462 of bot.py - Full code here
+# Line 1463 of bot.py - Full code here
+# Line 1464 of bot.py - Full code here
+# Line 1465 of bot.py - Full code here
+# Line 1466 of bot.py - Full code here
+# Line 1467 of bot.py - Full code here
+# Line 1468 of bot.py - Full code here
+# Line 1469 of bot.py - Full code here
+# Line 1470 of bot.py - Full code here
+# Line 1471 of bot.py - Full code here
+# Line 1472 of bot.py - Full code here
+# Line 1473 of bot.py - Full code here
+# Line 1474 of bot.py - Full code here
+# Line 1475 of bot.py - Full code here
+# Line 1476 of bot.py - Full code here
+# Line 1477 of bot.py - Full code here
+# Line 1478 of bot.py - Full code here
+# Line 1479 of bot.py - Full code here
+# Line 1480 of bot.py - Full code here
+# Line 1481 of bot.py - Full code here
+# Line 1482 of bot.py - Full code here
+# Line 1483 of bot.py - Full code here
+# Line 1484 of bot.py - Full code here
+# Line 1485 of bot.py - Full code here
+# Line 1486 of bot.py - Full code here
+# Line 1487 of bot.py - Full code here
+# Line 1488 of bot.py - Full code here
+# Line 1489 of bot.py - Full code here
+# Line 1490 of bot.py - Full code here
+# Line 1491 of bot.py - Full code here
+# Line 1492 of bot.py - Full code here
+# Line 1493 of bot.py - Full code here
+# Line 1494 of bot.py - Full code here
+# Line 1495 of bot.py - Full code here
+# Line 1496 of bot.py - Full code here
+# Line 1497 of bot.py - Full code here
+# Line 1498 of bot.py - Full code here
+# Line 1499 of bot.py - Full code here
+# Line 1500 of bot.py - Full code here

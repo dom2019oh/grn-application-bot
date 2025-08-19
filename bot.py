@@ -854,6 +854,9 @@ _HTML_FORM = """
 </body></html>
 """
 
+# Force REDIRECT_URI to your custom subdomain
+REDIRECT_URI = "https://auth.lsrpnetwork.com/auth"
+
 @flask_app.route("/auth", methods=["GET", "POST"])
 def oauth_handler():
     code = request.args.get("code")

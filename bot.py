@@ -24,7 +24,7 @@ from discord.ui import View, Button, Select
 from flask import Flask, request, redirect, render_template_string
 
 # -------------------------
-# LOGGING (flush to Railway)
+# LOGGING (flush to console)
 # -------------------------
 def setup_logging():
     handler = logging.StreamHandler(sys.stdout)
@@ -51,7 +51,8 @@ OWNER_ID = 1176071547476262986
 # OAuth (already configured in your app)
 CLIENT_ID = os.getenv("CLIENT_ID") or "1397974568706117774"
 CLIENT_SECRET = os.getenv("CLIENT_SECRET") or "KcaapGwCEsH_JDlIbrAX3lghSC-tDREN"
-REDIRECT_URI = os.getenv("REDIRECT_URI", "https://lsrpnetwork-verification.up.railway.app/auth")
+# ✅ Always use your new subdomain — no Railway fallback
+REDIRECT_URI = "https://auth.lsrpnetwork.com/auth"
 
 # Guilds
 HQ_GUILD_ID      = int(os.getenv("HQ_GUILD_ID", "1294319617539575808"))

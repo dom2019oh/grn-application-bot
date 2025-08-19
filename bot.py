@@ -855,9 +855,6 @@ _HTML_FORM = """
 </body></html>
 """
 
-# Force REDIRECT_URI to your custom subdomain
-REDIRECT_URI = "https://auth.lsrpnetwork.com/auth"
-
 @flask_app.route("/auth", methods=["GET", "POST"])
 def oauth_handler():
     code = request.args.get("code")
@@ -867,7 +864,7 @@ def oauth_handler():
             + urllib.parse.urlencode({
                 "client_id": CLIENT_ID,
                 "response_type": "code",
-                "redirect_uri": REDIRECT_URI,
+                "redirect_uri": "https://auth.lsrpnetwork.com/auth",  # ✅ updated domain
                 "scope": "identify guilds.join"
             })
         )
@@ -885,7 +882,7 @@ def oauth_handler():
             "client_secret": CLIENT_SECRET,
             "grant_type": "authorization_code",
             "code": code,
-            "redirect_uri": REDIRECT_URI,
+            "redirect_uri": "https://auth.lsrpnetwork.com/auth",  # ✅ updated domain
         },
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         timeout=15
@@ -928,7 +925,11 @@ def oauth_handler():
         if not (put_resp.status_code == 400 and "already" in put_resp.text.lower()):
             return f"Guild join failed: {put_resp.status_code} {put_resp.text}", 400
 
-       # For PS4 guild: auto roles + callsign
+    # ============================
+    # Auto roles + callsigns (PS4 + PS5 handled separately)
+    # ============================
+
+    # For PS4 guild
     try:
         if target_guild_id == PS4_GUILD_ID:
             g = bot.get_guild(PS4_GUILD_ID)
@@ -999,7 +1000,7 @@ def oauth_handler():
     except Exception:
         pass
 
-    # For PS5 guild: auto roles + callsign
+    # For PS5 guild
     try:
         if target_guild_id == PS5_GUILD_ID:
             g = bot.get_guild(PS5_GUILD_ID)
@@ -1087,6 +1088,12 @@ def oauth_handler():
 
     pending_codes.pop(user_id, None)
     return "✅ Success! You can close this tab and return to Discord."
+
+def run_web():
+    port = int(os.environ.get("PORT", "8080"))
+    flask_app.run(host="0.0.0.0", port=port)
+
+threading.Thread(target=run_web, daemon=True).start()
 
 # =========================
 # Utility / Fun / Ops Commands

@@ -508,126 +508,140 @@ async def run_questions(user: discord.User):
     # Done → post to review channel
     await post_review(user)
 
+def _quote_block(text: str) -> str:
+    """Make a Discord quote block, safely under field limits."""
+    # Discord embed field value max is 1024 chars. Keep a little headroom.
+    MAX = 950
+    text = text.strip()
+    if len(text) > MAX:
+        text = text[:MAX - 15].rstrip() + " … [truncated]"
+    # Prefix each line with '>' so multi-line answers render cleanly
+    return "\n".join(f"> {line}" if line.strip() else ">" for line in text.splitlines() or [" "])
+
 async def post_review(user: discord.User):
     sess = app_sessions.get(user.id)
     if not sess:
         return
-    dept = sess["dept"]
-    subdept = sess.get("subdept", "N/A")
+
+    dept     = sess.get("dept", "N/A")
+    subdept  = sess.get("subdept", "N/A")
     platform = sess.get("platform", "N/A")
     answers: List[Tuple[str, str]] = sess.get("answers", [])
-    color = dept_color(dept)
+    color    = dept_color(dept)
 
-    # Build review embed (show full question text + full answer)
-    desc_lines = [
-        f"**Applicant:** {user.mention} (`{user.id}`)",
-        f"**Department:** {dept}",
-        f"**Sub-Department:** {subdept}",
-        f"**Platform:** {platform}",
-        "",
-        "**Application Responses:**",
-    ]
-    for idx, (qt, ans) in enumerate(answers, start=1):
-        desc_lines.append(f"**Q{idx}: {qt}**")
-        for line in ans.splitlines():
-            desc_lines.append(f"> {line}")
-        desc_lines.append("")
-
+    # ---------- Build embed with fields (safe) ----------
     review_embed = Embed(
         title="🗂️ New Application Submitted",
-        description="\n".join(desc_lines),
-        color=color
+        color=color,
+        description=(
+            f"**Applicant:** {user.mention} (`{user.id}`)\n"
+            f"**Department:** {dept}\n"
+            f"**Sub-Department:** {subdept}\n"
+            f"**Platform:** {platform}\n"
+        )
     )
-    # Store metadata in footer so buttons can recover after restarts
+    # Footer metadata for restart-safe buttons
     review_embed.set_footer(text=f"applicant:{user.id}|dept:{dept}|sub:{subdept}|platform:{platform}")
 
-    guild = bot.get_guild(HQ_GUILD_ID)
-    if not guild:
-        return
-    ch = guild.get_channel(APP_REVIEW_CHANNEL_ID)
-    if not ch:
-        return
+    # Add each Q/A as a field (max 25; we use 20)
+    for idx, (qtext, ans) in enumerate(answers, start=1):
+        # Keep question title short to avoid name limits (256)
+        qname = f"Q{idx}: {qtext}"
+        if len(qname) > 250:
+            qname = qname[:247] + "…"
+        review_embed.add_field(name=qname, value=_quote_block(ans), inline=False)
 
-    view = ReviewButtonsPersistent()  # fixed custom_ids, persistent
-    await ch.send(embed=review_embed, view=view)
+    # ---------- Post to staff review channel with buttons ----------
+    posted_ok = False
+    try:
+        guild = bot.get_guild(HQ_GUILD_ID)
+        if guild is None:
+            raise RuntimeError("HQ_GUILD_ID not found or bot not in guild.")
+        ch = guild.get_channel(APP_REVIEW_CHANNEL_ID)
+        if ch is None:
+            raise RuntimeError("APP_REVIEW_CHANNEL_ID not found.")
 
-    # DM confirmation to applicant
+        view = ReviewButtonsPersistent()
+        await ch.send(embed=review_embed, view=view)
+        posted_ok = True
+
+    except Exception as e:
+        # Fallback: attach full application as a text file if embed failed
+        try:
+            full_text_lines = [
+                f"Applicant: {user} ({user.id})",
+                f"Department: {dept}",
+                f"Sub-Department: {subdept}",
+                f"Platform: {platform}",
+                "",
+                "=== Application Responses ===",
+            ]
+            for idx, (qtext, ans) in enumerate(answers, start=1):
+                full_text_lines.append(f"\nQ{idx}: {qtext}\n{ans}")
+            payload = "\n".join(full_text_lines).encode("utf-8")
+
+            file = discord.File(
+                fp=io.BytesIO(payload),
+                filename=f"application_{user.id}.txt"
+            )
+
+            # Try to send a compact embed plus file
+            fallback = Embed(
+                title="🗂️ New Application Submitted (Attachment)",
+                description=(
+                    f"**Applicant:** {user.mention} (`{user.id}`)\n"
+                    f"**Department:** {dept}\n"
+                    f"**Sub-Department:** {subdept}\n"
+                    f"**Platform:** {platform}\n\n"
+                    "Full responses are attached as a text file."
+                ),
+                color=color
+            )
+            fallback.set_footer(text=f"applicant:{user.id}|dept:{dept}|sub:{subdept}|platform:{platform}")
+
+            # Re-acquire channel in case the earlier lookup was the issue
+            guild = bot.get_guild(HQ_GUILD_ID)
+            ch = guild.get_channel(APP_REVIEW_CHANNEL_ID) if guild else None
+            if ch:
+                view = ReviewButtonsPersistent()
+                await ch.send(embed=fallback, file=file, view=view)
+                posted_ok = True
+            else:
+                # If we still can't post to staff, at least report internally if you have a reporter
+                try:
+                    await report_interaction_error(None, e, "post_review failed: channel missing; sent nothing")
+                except Exception:
+                    pass
+        except Exception as e2:
+            try:
+                await report_interaction_error(None, e2, "post_review fallback failed")
+            except Exception:
+                pass
+
+    # ---------- Always DM the applicant ----------
     try:
         dm = await user.create_dm()
-        await dm.send(embed=Embed(
-            title="✅ Application Submitted",
-            description=(
-                "Your application was submitted and is now under review by staff.\n"
-                "You will be notified here once a decision is made."
-            ),
-            color=color
-        ))
+        if posted_ok:
+            msg = (
+                "✅ **Application Submitted**\n"
+                "Your application has been delivered to staff for review. "
+                "You’ll receive a DM once a decision is made."
+            )
+        else:
+            msg = (
+                "✅ **Application Saved**\n"
+                "We received your answers, but there was a temporary issue delivering them to staff. "
+                "Staff will be notified and will pull your application shortly—no action needed on your end."
+            )
+        await dm.send(embed=Embed(title="Application Status", description=msg, color=color))
     except Exception:
         pass
 
-# ---------- Review Buttons (Persistent & restart-safe) ----------
-# Fixed custom_ids so old messages keep working after bot restarts
-ACCEPT_ID = "review_accept"
-DENY_ID   = "review_deny"
-
-class ReviewButtonsPersistent(SafeView):
-    def __init__(self):
-        super().__init__(timeout=None)  # persistent
-
-    @discord.ui.button(label="✅ Accept", style=discord.ButtonStyle.success, custom_id=ACCEPT_ID)
-    async def accept(self, interaction: discord.Interaction, button: Button):
-        try:
-            # Restrict to staff
-            if not any(r.id == STAFF_CAN_POST_PANEL_ROLE for r in interaction.user.roles):
-                return await interaction.response.send_message("🚫 You can’t accept applications.", ephemeral=True)
-
-            # ACK fast
-            await interaction.response.defer(ephemeral=True)
-
-            # Parse metadata from embed footer
-            emb = interaction.message.embeds[0] if interaction.message.embeds else None
-            footer = emb.footer.text if emb and emb.footer and emb.footer.text else ""
-            # expected: applicant:ID|dept:PSO|sub:SASP|platform:PS4
-            meta = dict([pair.split(":", 1) for pair in footer.split("|") if ":" in pair])
-            user_id = int(meta.get("applicant", "0"))
-            dept    = meta.get("dept", "N/A")
-            subdept = meta.get("sub", "N/A")
-            platform= meta.get("platform", "N/A")
-
-            # Notify staffer what to do next
-            await interaction.followup.send(
-                f"✅ Accepted. Please run **/auth_grant** for <@{user_id}> "
-                f"(Dept `{dept}` | Platform `{platform}`) to grant main server access.",
-                ephemeral=True
-            )
-
-            # DM applicant
-            user = bot.get_user(user_id) or await bot.fetch_user(user_id)
-            if user:
-                try:
-                    lines = []
-                    lines.append(f"Congratulations! You’ve been **accepted** into **{dept}**.")
-                    if dept == "PSO" and subdept and subdept != "N/A":
-                        lines.append(f"Assigned sub-department: **{subdept}**.")
-                    lines.append("")
-                    lines.append("**Next steps**")
-                    lines.append("• A staff member will issue you a **one-time 6-digit verification code** soon.")
-                    lines.append("• The code comes from the bot via DM and **expires 5 minutes** after it is sent.")
-                    lines.append("• Keep your DMs **open** and respond promptly. Do **not** share your code.")
-                    lines.append("")
-                    lines.append("**Expectations**")
-                    lines.append("• Follow all community regulations and your department’s SOPs.")
-                    lines.append("• Be respectful and maintain professional RP standards at all times.")
-                    lines.append("• You’ll receive main server access right after you complete verification.")
-
-                    e = Embed(
-                        title="🎉 Application Accepted",
-                        description="\n".join(lines),
-                        color=dept_color(dept)
-                    )
-                    await user.send(embed=e)
-                except Exception:
-                    pass
+    # Optional: clear the session to free memory
+    try:
+        app_sessions.pop(user.id, None)
+    except Exception:
+        pass
 
             # Disable buttons on the original staff message
             for child in self.children:

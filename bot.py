@@ -644,7 +644,10 @@ async def post_review(user: discord.User):
         pass
 
 
-# ---------- Review Buttons (Persistent) ----------
+# ---------- Review Buttons (Persistent & restart-safe) ----------
+ACCEPT_ID = "review_accept"
+DENY_ID   = "review_deny"
+
 class ReviewButtonsPersistent(SafeView):
     def __init__(self):
         super().__init__(timeout=None)

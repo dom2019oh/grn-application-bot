@@ -554,14 +554,30 @@ def auth_grant():
 
 @bot.event
 async def on_ready():
-    # Persistent panel view
-    bot.add_view(ApplicationPanel())
-    print(f"✅ Application Bot ready as {bot.user}")
-    # Auto-post the panel if needed (comment out if you already have a posted panel)
+    print(f"✅ Application Bot ready as {bot.user} (ID: {bot.user.id})")
+
     try:
-        await post_permanent_panel()
-    except Exception:
-        pass
+        # Permanent Application Panel Channel (HQ)
+        channel = bot.get_channel(1324115220725108877)  # <-- your permanent panel channel ID
+
+        if channel:
+            embed = Embed(
+                title="📋 LSRP Network Applications",
+                description=(
+                    "Welcome to the Los Santos Roleplay Network™ Application Center.\n\n"
+                    "Please select the department you wish to apply for using the dropdown menu below.\n\n"
+                    "Once selected, you will be guided through the application process in your DMs."
+                ),
+                color=0x2F3136
+            )
+
+            # Attach dropdown view
+            view = DepartmentDropdownView()  # Make sure this matches your dropdown class name
+            await channel.send(embed=embed, view=view)
+
+    except Exception as e:
+        print(f"⚠️ Failed to spawn panel: {e}")
+
 
 # ================================================================
 # RUN

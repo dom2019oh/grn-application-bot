@@ -25,7 +25,9 @@ from flask import Flask, request
 import discord
 from discord.ext import commands
 from discord import app_commands, Embed
-from discord.ui import View, Button, Select, SelectOption
+from discord.ui import View, Button, Select
+from discord import SelectOption
+
 
 # ================================================================
 # SECTION 1 — Setup & Constants

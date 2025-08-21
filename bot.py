@@ -334,6 +334,25 @@ async def on_ready():
     bot.add_view(ApplicationPanel())  # keep panel dropdown alive
     logger.info(f"✅ Application Bot ready as {bot.user}")
 
+@bot.event
+async def on_ready():
+    bot.add_view(ApplicationPanel())  # keep dropdown alive
+
+    # Auto-post panel in permanent channel
+    try:
+        channel = bot.get_channel(APPLICATION_PANEL_CHANNEL_ID)
+        if channel:
+            # Clear the channel if needed, then post fresh panel
+            await post_panel(channel)
+            logger.info("✅ Permanent application panel posted.")
+        else:
+            logger.warning("⚠️ Could not find the panel channel.")
+    except Exception as e:
+        logger.error(f"❌ Failed to post panel: {e}")
+
+    logger.info(f"✅ Application Bot ready as {bot.user}")
+
+
 if __name__ == "__main__":
     bot.run(BOT_TOKEN)
 

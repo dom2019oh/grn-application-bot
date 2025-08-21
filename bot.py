@@ -1,593 +1,342 @@
-# ================================================================
-# LSRP Network — Application Bot (Full)
-# ================================================================
-# Features
-# - Permanent Application Panel (dropdown: PSO / Civilian Ops / SAFD)
-# - DM applications (20 Qs/department, Q4 = buttons, 45 min total)
-# - Staff review embed (single channel) with Accept / Deny buttons
-# - Accept => DM + invite + HQ Verified->Official swap (ENV IDs)
-# - Member join:
-#     • PS4: keep existing behavior (applicant->accepted + PSO roles + callsign + log)
-#     • PS5: mirror PS4 behavior (accepted + category roles + callsign + log)
-# - OAuth web server (/auth) to join PS4/PS5 using access_token
-#
-# Edit hotspots are marked with:  ### EDIT HERE
-# ================================================================
+# =====================================================
+# LSRP Network System™® — Application Bot
+# CHUNK 1/3 — Setup + Panel + PSO Application (20 Qs)
+# =====================================================
 
 import os
 import random
 import asyncio
-from threading import Thread
-
-import requests
-from flask import Flask, request
+import logging
 
 import discord
+from discord import app_commands, Embed, Object
 from discord.ext import commands
-from discord import app_commands, Embed
 from discord.ui import View, Button, Select
-from discord import SelectOption
 
+# -------------------------
+# LOGGING
+# -------------------------
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("application_bot")
 
-# ================================================================
-# SECTION 1 — Setup & Constants
-# ================================================================
+# -------------------------
+# ENV VARS / CONSTANTS
+# -------------------------
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CLIENT_ID = os.getenv("CLIENT_ID")
+CLIENT_SECRET = os.getenv("CLIENT_SECRET")
+REDIRECT_URI = os.getenv("REDIRECT_URI", "https://auth.lsrpnetwork.com/auth")
 
+HQ_GUILD_ID = 1324117813878718474
+PS5_GUILD_ID = 1401903156274790441
+
+VERIFIED_ROLE_ID = 1367753287872286720
+OFFICIAL_ROLE_ID = 1401961522556698739
+STAFF_CAN_POST_PANEL_ROLE = 1375046499414704138
+
+PS4_SASP_ROLE = 1401347813958226061
+PS4_BCSO_ROLE = 1401347339796348938
+PS5_SASP_ROLE = 1407034121808646269
+PS5_BCSO_ROLE = 1407034123561734245
+
+APPLICATION_TIPS_CHANNEL = 1400933920534560989
+PANEL_IMAGE_URL = "https://example.com/banner.png"
+
+CALLSIGN_LOG_CHANNEL = 1396076403052773396
+STAFF_REVIEW_CHANNEL = 1366431401054048357
+
+# =====================================================
+# DISCORD SETUP
+# =====================================================
 intents = discord.Intents.default()
 intents.members = True
-intents.message_content = False
-
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix="?", intents=intents)
 tree = bot.tree
 
-# --- Critical ENV (set these in Railway) ------------------------
-BOT_TOKEN         = os.getenv("BOT_TOKEN")                          ### EDIT HERE (ENV)
-CLIENT_ID         = os.getenv("CLIENT_ID")                          ### EDIT HERE (ENV)
-CLIENT_SECRET     = os.getenv("CLIENT_SECRET")                      ### EDIT HERE (ENV)
-REDIRECT_URI      = os.getenv("REDIRECT_URI", "https://lsrpnetwork-verification.up.railway.app/auth")
-VERIFIED_ROLE_ID  = int(os.getenv("VERIFIED_ROLE_ID", "0"))         ### EDIT HERE (ENV)
-OFFICIAL_ROLE_ID  = int(os.getenv("OFFICIAL_ROLE_ID", "0"))         ### EDIT HERE (ENV)
-
-# --- Fixed IDs (from your setup) --------------------------------
-HQ_GUILD_ID                = 1324117813878718474
-PS4_GUILD_ID               = 1324117813878718474
-PS5_GUILD_ID               = 1401903156274790441
-PANEL_CHANNEL_ID_HQ        = 1324115220725108877     # Permanent application panel lives here
-STAFF_REVIEW_CHANNEL_ID    = 1366431401054048357     # Same channel for all departments
-
-# PS4 applicant/accepted
-PS4_APPLICANT_ROLE_ID      = 1401961522556698739
-PS4_ACCEPTED_ROLE_ID       = 1367753287872286720
-
-# PS5 applicant/accepted
-PS5_APPLICANT_ROLE_ID      = 1401961758502944900
-PS5_ACCEPTED_ROLE_ID       = 1367753535839797278
-
-# PS4 PSO roles (keep exact list you provided)
-PS4_PSO_ROLES = [
-    1375046619824914543,
-    1375046631237484605,
-    1375046520469979256,
-    1375046521904431124,
-    1375046543329202186,
-]
-
-# PS5 category roles to attach on join (SASP/BCSO)
-PS5_PSO_ROLES = [
-    1407034121808646269,  # ⦿ San Andreas State Police ⦿
-    1407034123561734245,  # ⦿ Blaine County Sheriff's Office ⦿
-]
-
-# Callsign log
-CALLSIGN_LOG_CHANNEL_ID    = 1396076403052773396
-
-# Invite
-MAIN_INVITE_LINK           = "https://discord.gg/yN2fs6y5v3"
-
-# Application timing
-APP_TOTAL_TIME_SECONDS     = 45 * 60    # EXACTLY 45 minutes
-
-# Colors
-COLOR_PSO  = discord.Color.blue()
-COLOR_CIV  = discord.Color.green()
-COLOR_SAFD = discord.Color.from_rgb(207, 16, 32)  # lava red-ish
-COLOR_PANEL= discord.Color.blurple()
-
-# ================================================================
-# SECTION 2 — Department Question Banks (20 each)
-# ================================================================
-
-PSO_QUESTIONS = [
-    "What is Discord username?",
-    "How old are you in real life?",
-    "Please state your Date of Birth. (e.g., 16th June 2010)",
-    "How did you find us?",  # BUTTONS
-    "Explain the \"No Life Rule\" in the best of your ability.",
-    "What does VDM, RDM and FRP mean? Describe in the best of your ability.",
-    "Do you have any roleplay experience, if so, please tell us.",
-    "What time zone are you from? (e.g., GMT, EST, UTC etc.)",
-    "Describe what a 10-11 means. In your own words.",
-    "You see a suspect with a knife coming at you. Select one action:\n• Ask him to stop.\n• Taser him. ✅\n• Run away.\n• Shoot him. ✅",
-    "What does a 10-80 mean? (Foot pursuit / Officer down / Vehicle chase ✅)",
-    "How would you handle a 10-11? (User explains)",
-    "You arrive at a robbery scene, suspect yells “I have a bomb!!” – what do you do next?",
-    "What does Code 1, 2, and 3 mean?",
-    "When you go on duty, what 10 codes do you use?\n• 10-8, 10-41 ✅\n• 10-7, 10-42\n• 10-70, 10-80",
-    "As a cadet, are you eligible to drive on your own?\n• Yes\n• No ✅",
-    "You see a sniper on a hilltop. You have a pistol and radio. What do you do? (Min 20 words)",
-    "How would you handle a noise complaint? (Min 20 words)",
-    "Choose the correct cadet loadout:\n• Pistol, taser, baton, flashlight ✅\n• Assault rifle, pistol, shotgun, baton, flashbang\n• RPG, baton, pistol, flashlight",
-    "What is a 10-99?",
-]
-
-CIVILIAN_QUESTIONS = [
-    "What is Discord username?",
-    "How old are you in real life?",
-    "Please state your Date of Birth.",
-    "How did you find us?",  # BUTTONS
-    "Explain FearRP in your own words.",
-    "What is Powergaming? Give an example.",
-    "What is Metagaming? Give an example.",
-    "Do you have previous civilian roleplay experience?",
-    "Describe how you would roleplay a traffic stop as a civilian.",
-    "If police chase you for speeding, how do you react?",
-    "What do you do if you crash during an RP scene?",
-    "Explain how to roleplay injuries properly.",
-    "How would you roleplay a robbery realistically?",
-    "What is FailRP? Provide an example.",
-    "How do you roleplay owning a business?",
-    "How would you roleplay being arrested?",
-    "What is Cop Baiting and why is it not allowed?",
-    "Describe how you would roleplay a car accident.",
-    "What do you do if staff interrupts your RP?",
-    "Why do you want to join Civilian Operations?",
-]
-
-SAFD_QUESTIONS = [
-    "What is Discord username?",
-    "How old are you in real life?",
-    "Please state your Date of Birth.",
-    "How did you find us?",  # BUTTONS
-    "What does EMT stand for?",
-    "Explain how you would roleplay a fire scene.",
-    "How do you roleplay CPR?",
-    "What’s the difference between ALS and BLS?",
-    "List key firefighter equipment used in scenes.",
-    "How would you treat a gunshot wound?",
-    "How do you roleplay transporting a patient?",
-    "What do you do if PD calls you to a crash?",
-    "How do you roleplay being overrun in a fire?",
-    "What’s the chain of command in SAFD?",
-    "How do you roleplay a hazmat scene?",
-    "What’s the correct SAFD radio code for en route?",
-    "How do you roleplay backup arriving?",
-    "What’s the SAFD loadout?",
-    "How would you roleplay heat exhaustion?",
-    "Why do you want to join SAFD?",
-]
-
-# Department map
-DEPTS = {
-    "PSO":      {"color": COLOR_PSO,  "questions": PSO_QUESTIONS},
-    "Civilian": {"color": COLOR_CIV,  "questions": CIVILIAN_QUESTIONS},
-    "SAFD":     {"color": COLOR_SAFD, "questions": SAFD_QUESTIONS},
-}
-
-# ================================================================
-# SECTION 3 — Panel (Permanent)
-# ================================================================
-
-class DepartmentSelect(Select):
-    def __init__(self):
-        options = [
-            SelectOption(label="PSO", description="Public Safety Office Application", emoji="🛡️"),
-            SelectOption(label="Civilian", description="Civilian Operations Application", emoji="🧍"),
-            SelectOption(label="SAFD", description="Fire/EMS Application", emoji="🚑"),
-        ]
-        super().__init__(
-            placeholder="Select your department to start the application…",
-            min_values=1, max_values=1, options=options, custom_id="lsrp_panel_select"
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        dept = self.values[0]
-        await interaction.response.send_message(
-            f"✅ Check your DMs to start the **{dept}** application. You have **45 minutes**.",
-            ephemeral=True
-        )
-        try:
-            await start_application_dm(interaction.user, dept)
-        except discord.Forbidden:
-            await interaction.followup.send(
-                "⚠️ I couldn't DM you. Enable DMs and try again.",
-                ephemeral=True
-            )
-
+# =====================================================
+# SECTION 1 - Application Panel View
+# =====================================================
 class ApplicationPanel(View):
     def __init__(self):
         super().__init__(timeout=None)
-        self.add_item(DepartmentSelect())
+        self.add_item(Select(
+            placeholder="Select a department to apply for...",
+            options=[
+                discord.SelectOption(label="Public Safety Office (PSO)", value="pso"),
+                discord.SelectOption(label="Civilian Operations (CO)", value="co"),
+                discord.SelectOption(label="San Andreas Fire & Rescue (SAFR)", value="safr"),
+            ]
+        ))
 
-async def post_permanent_panel():
-    """Posts the permanent panel in the configured channel (HQ)."""
-    guild = bot.get_guild(HQ_GUILD_ID)
-    if not guild:
-        return
-    ch = guild.get_channel(PANEL_CHANNEL_ID_HQ)
-    if not ch:
-        return
+# =====================================================
+# SECTION 2 - Panel Posting (Permanent Panel)
+# =====================================================
+async def post_panel(channel: discord.TextChannel):
+    tips_channel_mention = f"<#{APPLICATION_TIPS_CHANNEL}>"
 
-    desc = (
-        "**Welcome to Los Santos Roleplay Network™® Applications**\n\n"
-        "Use the dropdown below to select your department and begin your application.\n"
-        "Applications are conducted via **DM**. You have **45 minutes** to complete all questions.\n"
-        "Staff will review your application and notify you of the result."
-    )
-    emb = Embed(title="📋 LSRP Network — Membership Applications", description=desc, color=COLOR_PANEL)
-    await ch.send(embed=emb, view=ApplicationPanel())
-
-# ================================================================
-# SECTION 4 — DM Application Flow
-# ================================================================
-
-class HowFoundButtons(View):
-    """Button set for Q4: How did you find us?"""
-    def __init__(self):
-        super().__init__(timeout=APP_TOTAL_TIME_SECONDS)
-        self.value = None
-
-    @discord.ui.button(label="Friend", style=discord.ButtonStyle.primary)
-    async def friend(self, interaction: discord.Interaction, button: Button):
-        self.value = "Friend"
-        await interaction.response.defer()
-        self.stop()
-
-    @discord.ui.button(label="Instagram", style=discord.ButtonStyle.primary)
-    async def instagram(self, interaction: discord.Interaction, button: Button):
-        self.value = "Instagram"
-        await interaction.response.defer()
-        self.stop()
-
-    @discord.ui.button(label="Partnership", style=discord.ButtonStyle.primary)
-    async def partnership(self, interaction: discord.Interaction, button: Button):
-        self.value = "Partnership"
-        await interaction.response.defer()
-        self.stop()
-
-    @discord.ui.button(label="Other", style=discord.ButtonStyle.secondary)
-    async def other(self, interaction: discord.Interaction, button: Button):
-        self.value = "Other"
-        await interaction.response.defer()
-        self.stop()
-
-async def _ask_text(dm: discord.DMChannel, color: discord.Color, q: str) -> str | None:
-    emb = Embed(title="Application Question", description=q, color=color)
-    await dm.send(embed=emb)
-
-    def check(m: discord.Message):
-        return isinstance(m.channel, discord.DMChannel) and m.author == dm.recipient
-
-    try:
-        msg = await bot.wait_for("message", timeout=APP_TOTAL_TIME_SECONDS, check=check)
-        return msg.content.strip()
-    except asyncio.TimeoutError:
-        await dm.send("⏰ Time limit exceeded (45 minutes). Please reapply from the panel.")
-        return None
-
-async def _ask_buttons(dm: discord.DMChannel, color: discord.Color, q: str) -> str | None:
-    emb = Embed(title="Application Question", description=q, color=color)
-    view = HowFoundButtons()
-    sent = await dm.send(embed=emb, view=view)
-    try:
-        timeout = await view.wait()
-        if timeout or not view.value:
-            await dm.send("⏰ Time limit exceeded (45 minutes). Please reapply from the panel.")
-            return None
-        return view.value
-    finally:
-        # remove buttons
-        try:
-            await sent.edit(view=None)
-        except Exception:
-            pass
-
-async def start_application_dm(user: discord.User, dept_key: str):
-    dept = DEPTS.get(dept_key)
-    if not dept:
-        return
-    color = dept["color"]
-    questions = dept["questions"]
-
-    dm = await user.create_dm()
+    title = "## 📥 Los Santos Roleplay Network™® — Applications."
     intro = (
-        f"**{dept_key} Application**\n"
-        "Answer each question. Use the buttons when provided.\n"
-        "You have **45 minutes** in total to complete this application."
+        "**Hello prospective members!**\n\n"
+        "*We’re excited to have you on board—now it’s time to apply for access to our Main Server. "
+        "This is your first step toward becoming a fully engaged member and jumping into the action!*\n\n"
+        f"*For guidance, please head to {tips_channel_mention} where you’ll find everything you need to know about the process.*"
     )
-    await dm.send(embed=Embed(title="Starting Application", description=intro, color=color))
 
-    answers: list[str] = []
-    for idx, q in enumerate(questions, start=1):
-        if idx == 4:
-            ans = await _ask_buttons(dm, color, q)
-        else:
-            ans = await _ask_text(dm, color, q)
-        if ans is None:
-            return  # user timed out
-        answers.append(ans)
+    tips = (
+        "### 📌 A Few Tips Before You Start:\n"
+        "**1. Read the `Rules` Carefully.**\n\n"
+        "> Before submitting, make sure you’ve read through __all server rules and guidelines.__\n\n"
+        "**2. Take Your Time.**\n\n"
+        "> Don’t rush — fill out your application truthfully and provide good detail about your RP experience and goals.\n\n"
+        "**3. Be Honest & Authentic.**\n\n"
+        "> New to RP? That’s fine. Tell us how you plan to grow - everyone starts somewhere and we’re here to support you."
+    )
 
-    await _post_for_review(user, dept_key, questions, answers, color)
+    what_next = (
+        "### ⏳ What Happens Next?\n\n"
+        "*Once you submit, staff will review your application and get back to you within 30 minutes.*\n"
+        "Please keep your DMs open so the bot can message you with next steps."
+    )
 
-# ================================================================
-# SECTION 5 — Staff Review & Accept/Deny
-# ================================================================
+    choose_path = (
+        "## 🧭 Choose Your Path.\n\n"
+        "**Use the menu below to select your department:**\n"
+        "• `PSO` — *Public Safety Office (Law Enforcement: BCSO / SASP)*\n"
+        "• `CO` — *Civilian Operations (Civilian Roleplay)*\n"
+        "• `SAFR` — *San Andreas Fire & Rescue (Fire & EMS)*"
+    )
 
-class ReviewButtons(View):
-    def __init__(self, applicant_id: int, dept: str):
-        super().__init__(timeout=None)
-        self.applicant_id = applicant_id
-        self.dept = dept
+    embed = discord.Embed(
+        description=f"{title}\n\n{intro}\n\n{tips}\n\n{what_next}\n\n{choose_path}",
+        color=discord.Color.blurple()
+    )
+    embed.set_image(url=PANEL_IMAGE_URL)
 
-    @discord.ui.button(label="Accept", style=discord.ButtonStyle.success)
-    async def accept(self, interaction: discord.Interaction, button: Button):
-        # Disable both buttons
-        for item in self.children:
-            if isinstance(item, Button):
-                item.disabled = True
-        await interaction.response.edit_message(view=self)
+    await channel.send(embed=embed, view=ApplicationPanel())
 
-        # DM the applicant with invite
+# =====================================================
+# SECTION 3 - PSO Application Flow (20 Questions)
+# =====================================================
+PSO_QUESTIONS = [
+    "1. What is your Discord username?",
+    "2. How old are you in real life?",
+    "3. Please state your Date of Birth. (e.g., 16th June 2010)",
+    "4. How did you find us? (Friend, Instagram, Partnership, Other)",
+    "5. Explain the 'No Life Rule' in the best of your ability.",
+    "6. What does VDM, RDM, and FRP mean? Describe in the best of your ability.",
+    "7. Do you have any roleplay experience, if so, please tell us.",
+    "8. What time zone are you from? (e.g., GMT, EST, UTC etc.)",
+    "9. Describe what a 10-11 means. In your own words.",
+    "10. You see a suspect with a knife coming at you. Do you:\n- Ask him to stop\n- Taser him ✅\n- Run away\n- Shoot him ✅",
+    "11. What does a 10-80 mean?\n- Foot pursuit\n- Officer down\n- Vehicle chase ✅",
+    "12. How would you handle a 10-11?",
+    "13. You arrive at a robbery scene, suspect yells 'I have a bomb!!' – what do you do next?",
+    "14. What does Code 1, 2, and 3 mean?",
+    "15. When you go on duty, what 10 codes do you use?\n- 10-8, 10-41 ✅\n- 10-7, 10-42\n- 10-70, 10-80",
+    "16. As a cadet, are you eligible to drive on your own?\n- Yes\n- No ✅",
+    "17. You see a sniper on a hilltop. You have a pistol and radio. What do you do? (Min 20 words)",
+    "18. How would you handle a noise complaint? (Min 20 words)",
+    "19. Choose the correct cadet loadout:\n- Pistol, taser, baton, flashlight ✅\n- Assault rifle, pistol, shotgun, baton, flashbang\n- RPG, baton, pistol, flashlight",
+    "20. What is a 10-99?"
+]
+
+async def run_pso_application(user: discord.User, channel: discord.DMChannel):
+    responses = []
+    for q in PSO_QUESTIONS:
+        embed = discord.Embed(title="PSO Application", description=q, color=discord.Color.blue())
+        await channel.send(embed=embed)
         try:
-            user = await bot.fetch_user(self.applicant_id)
-            dm = await user.create_dm()
-            desc = (
-                f"You've been **ACCEPTED** to **{self.dept}**!\n\n"
-                f"Join here: {MAIN_INVITE_LINK}\n\n"
-                "Once you join the platform server, your roles and callsign will be handled automatically."
+            msg = await bot.wait_for(
+                "message",
+                timeout=300,
+                check=lambda m: m.author == user and isinstance(m.channel, discord.DMChannel)
             )
-            await dm.send(embed=Embed(title="✅ Application Accepted", description=desc, color=discord.Color.green()))
-        except Exception:
-            pass
+            responses.append((q, msg.content))
+        except asyncio.TimeoutError:
+            await channel.send("⏳ Application timed out. Please re-apply.")
+            return None
+    return responses
 
-        # HQ role swap: Verified -> Official (ENV-based)
-        hq = bot.get_guild(HQ_GUILD_ID)
-        if hq and VERIFIED_ROLE_ID and OFFICIAL_ROLE_ID:
-            member = hq.get_member(self.applicant_id)
-            if member:
-                vrole = hq.get_role(VERIFIED_ROLE_ID)
-                orole = hq.get_role(OFFICIAL_ROLE_ID)
-                try:
-                    if vrole and vrole in member.roles:
-                        await member.remove_roles(vrole, reason="Accepted: Verified->Official")
-                except Exception:
-                    pass
-                try:
-                    if orole and orole not in member.roles:
-                        await member.add_roles(orole, reason="Accepted: add Official")
-                except Exception:
-                    pass
+# =====================================================
+# SECTION 4 - Civilian Operations Application Flow
+# =====================================================
+CIVILIAN_QUESTIONS = [
+    "1. What is your Discord username?",
+    "2. How old are you in real life?",
+    "3. Please state your Date of Birth.",
+    "4. How did you find us? (Friend, Instagram, Partnership, Other)",
+    "5. You are driving and run a red light. Police pull you over. How do you respond?",
+    "6. What is FailRP? Explain with an example.",
+    "7. What is FearRP? Explain with an example.",
+    "8. You crash your vehicle into another. How do you handle it?",
+    "9. Your character just lost their job. What are some legal RP scenarios you could pursue?",
+    "10. What are three things civilians CANNOT do in roleplay?",
+    "11. Explain the difference between passive RP and active RP.",
+    "12. What are some examples of creative civilian roleplay scenes you would do?",
+    "13. You are in a bank when a robbery happens. What do you do?",
+    "14. If your character was drunk, how would you RP that realistically?",
+    "15. You win the lottery in-game. What would your RP look like after that?",
+    "16. Someone meta-games against you. How do you respond?",
+    "17. How do you ensure you are not powergaming during a scene?",
+    "18. What are some examples of realistic civilian crimes you could roleplay?",
+    "19. How would you RP a court appearance or traffic ticket?",
+    "20. Why do you want to be part of Civilian Operations?"
+]
 
-        await interaction.followup.send("✅ Accepted. Invite sent; HQ roles updated.", ephemeral=True)
+async def run_co_application(user: discord.User, channel: discord.DMChannel):
+    responses = []
+    for q in CIVILIAN_QUESTIONS:
+        embed = discord.Embed(title="Civilian Operations Application", description=q, color=discord.Color.green())
+        await channel.send(embed=embed)
+        try:
+            msg = await bot.wait_for(
+                "message",
+                timeout=300,
+                check=lambda m: m.author == user and isinstance(m.channel, discord.DMChannel)
+            )
+            responses.append((q, msg.content))
+        except asyncio.TimeoutError:
+            await channel.send("⏳ Application timed out. Please re-apply.")
+            return None
+    return responses
 
-    @discord.ui.button(label="Deny", style=discord.ButtonStyle.danger)
+# =====================================================
+# SECTION 5 - SAFR Application Flow
+# =====================================================
+SAFR_QUESTIONS = [
+    "1. What is your Discord username?",
+    "2. How old are you in real life?",
+    "3. Please state your Date of Birth.",
+    "4. How did you find us? (Friend, Instagram, Partnership, Other)",
+    "5. Explain what 'staging' means when arriving at a fire/EMS scene.",
+    "6. What is the difference between ALS and BLS?",
+    "7. You arrive at a car crash. What steps do you take?",
+    "8. You see a burning building. What are your priorities?",
+    "9. You arrive at a scene with multiple victims. How do you triage?",
+    "10. What does 'Code 0' mean in Fire/EMS?",
+    "11. How do you handle roleplaying a patient refusing treatment?",
+    "12. How would you roleplay smoke inhalation?",
+    "13. What tools does a firefighter typically carry?",
+    "14. What are the three sides of the fire triangle?",
+    "15. How would you roleplay CPR?",
+    "16. You’re first on scene to a vehicle fire. Walk through your actions.",
+    "17. How do you roleplay dispatching an ambulance?",
+    "18. You respond to a false alarm. How do you roleplay that?",
+    "19. How would you RP burnout or exhaustion after a long shift?",
+    "20. Why do you want to join SAFR?"
+]
+
+async def run_safr_application(user: discord.User, channel: discord.DMChannel):
+    responses = []
+    for q in SAFR_QUESTIONS:
+        embed = discord.Embed(title="SAFR Application", description=q, color=discord.Color.red())
+        await channel.send(embed=embed)
+        try:
+            msg = await bot.wait_for(
+                "message",
+                timeout=300,
+                check=lambda m: m.author == user and isinstance(m.channel, discord.DMChannel)
+            )
+            responses.append((q, msg.content))
+        except asyncio.TimeoutError:
+            await channel.send("⏳ Application timed out. Please re-apply.")
+            return None
+    return responses
+
+# =====================================================
+# SECTION 6 - Staff Review System
+# =====================================================
+class ReviewButtons(View):
+    def __init__(self, applicant: discord.User, responses: list):
+        super().__init__(timeout=None)
+        self.applicant = applicant
+        self.responses = responses
+
+        self.add_item(Button(label="✅ Accept", style=discord.ButtonStyle.green, custom_id="accept"))
+        self.add_item(Button(label="❌ Deny", style=discord.ButtonStyle.red, custom_id="deny"))
+
+    @discord.ui.button(label="✅ Accept", style=discord.ButtonStyle.green, custom_id="accept_btn")
+    async def accept(self, interaction: discord.Interaction, button: Button):
+        # Assign roles + notify applicant
+        guild = interaction.guild
+        member = guild.get_member(self.applicant.id)
+        if member:
+            await member.add_roles(Object(id=VERIFIED_ROLE_ID))
+            await member.add_roles(Object(id=OFFICIAL_ROLE_ID))
+            await self.applicant.send("✅ Your application has been **accepted**! Welcome to Los Santos Roleplay Network™®.")
+        await interaction.response.send_message("Applicant accepted ✅", ephemeral=True)
+        self.disable_all_items()
+        await interaction.message.edit(view=self)
+
+    @discord.ui.button(label="❌ Deny", style=discord.ButtonStyle.red, custom_id="deny_btn")
     async def deny(self, interaction: discord.Interaction, button: Button):
-        for item in self.children:
-            if isinstance(item, Button):
-                item.disabled = True
-        await interaction.response.edit_message(view=self)
+        await self.applicant.send("❌ Your application has been **denied**. You may reapply after 12 hours.")
+        await interaction.response.send_message("Applicant denied ❌", ephemeral=True)
+        self.disable_all_items()
+        await interaction.message.edit(view=self)
 
-        # DM denial
-        try:
-            user = await bot.fetch_user(self.applicant_id)
-            dm = await user.create_dm()
-            await dm.send(embed=Embed(
-                title="❌ Application Denied",
-                description="Thank you for applying. You may reapply after the cooldown.",
-                color=discord.Color.red()
-            ))
-        except Exception:
-            pass
-
-        await interaction.followup.send("❌ Applicant denied.", ephemeral=True)
-
-async def _post_for_review(user: discord.User, dept_key: str, questions: list[str], answers: list[str], color: discord.Color):
-    guild = bot.get_guild(HQ_GUILD_ID)
-    if not guild:
-        return
-    ch = guild.get_channel(STAFF_REVIEW_CHANNEL_ID)
-    if not ch:
-        return
-
-    emb = Embed(title=f"{dept_key} Membership Application", color=color)
-    emb.set_author(name=f"{user} • {user.id}")
-    for i, q in enumerate(questions, start=1):
-        val = answers[i - 1]
-        if len(val) > 1024:
-            val = val[:1020] + " ..."
-        emb.add_field(name=f"Q{i}. {q}", value=val or "*No answer*", inline=False)
-
-    view = ReviewButtons(applicant_id=user.id, dept=dept_key)
-    await ch.send(embed=emb, view=view)
-
-# ================================================================
-# SECTION 6 — Member Join (PS4 kept, PS5 mirrored)
-# ================================================================
-
-def _gen_callsign(username: str) -> str:
-    return f"C-{random.randint(1000, 1999)} | {username}"
-
-async def _log_callsign(guild: discord.Guild, member: discord.Member, callsign: str, tag: str):
-    ch = guild.get_channel(CALLSIGN_LOG_CHANNEL_ID)
-    if ch:
-        try:
-            await ch.send(f"✅ {member.mention} assigned callsign **{callsign}** ({tag}).")
-        except Exception:
-            pass
-
-@bot.event
-async def on_member_join(member: discord.Member):
+# =====================================================
+# SECTION 7 - Authorization Command
+# =====================================================
+@tree.command(name="auth_grant", description="Grant access after application approval.")
+async def auth_grant(interaction: discord.Interaction, member: discord.Member):
     try:
-        # ---------------- PS4 (AS-IS BEHAVIOR) ----------------
-        if member.guild.id == PS4_GUILD_ID:
-            # Remove Applicant, add Accepted
-            app_role = member.guild.get_role(PS4_APPLICANT_ROLE_ID)
-            if app_role and app_role in member.roles:
-                try:
-                    await member.remove_roles(app_role, reason="Accepted: remove PS4 Applicant")
-                except Exception:
-                    pass
+        # Remove applicant role if exists
+        applicant_roles = [1401961522556698739, 1401961758502944900, 1401961991756578817]  # PS4/PS5 applicant roles
+        for role_id in applicant_roles:
+            role = interaction.guild.get_role(role_id)
+            if role and role in member.roles:
+                await member.remove_roles(role)
 
-            acc_role = member.guild.get_role(PS4_ACCEPTED_ROLE_ID)
-            if acc_role and acc_role not in member.roles:
-                try:
-                    await member.add_roles(acc_role, reason="Accepted: add PS4 Accepted")
-                except Exception:
-                    pass
+        # Add official + verified roles
+        await member.add_roles(Object(id=VERIFIED_ROLE_ID))
+        await member.add_roles(Object(id=OFFICIAL_ROLE_ID))
 
-            # Add PSO roles list
-            for rid in PS4_PSO_ROLES:
-                r = member.guild.get_role(rid)
-                if r and r not in member.roles:
-                    try:
-                        await member.add_roles(r, reason="PS4: add PSO base roles")
-                    except Exception:
-                        pass
+        await interaction.response.send_message(f"✅ {member.mention} authorized and roles applied.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Failed: {e}", ephemeral=True)
 
-            # Callsign + log
-            callsign = _gen_callsign(member.name)
-            try:
-                await member.edit(nick=callsign, reason="PS4: cadet callsign")
-            except Exception:
-                pass
-            await _log_callsign(member.guild, member, callsign, "PS4")
+# =====================================================
+# SECTION 8 - PS5 Mirroring + Callsign Assignment
+# =====================================================
+async def assign_subdept_roles(member: discord.Member, dept: str, guild_type="PS4"):
+    """Assign subdepartment roles depending on guild type (PS4 or PS5)."""
+    if guild_type == "PS4":
+        if dept == "SASP":
+            await member.add_roles(Object(id=PS4_SASP_ROLE))
+        elif dept == "BCSO":
+            await member.add_roles(Object(id=PS4_BCSO_ROLE))
+    elif guild_type == "PS5":
+        if dept == "SASP":
+            await member.add_roles(Object(id=PS5_SASP_ROLE))
+        elif dept == "BCSO":
+            await member.add_roles(Object(id=PS5_BCSO_ROLE))
 
-            return  # done
+async def assign_callsign(member: discord.Member, dept: str):
+    """Generate random callsign and log it."""
+    callsign_num = random.randint(1000, 1999)
+    callsign = f"C-{callsign_num} | {member.name}"
 
-        # ---------------- PS5 (MIRROR PS4) ----------------
-        if member.guild.id == PS5_GUILD_ID:
-            # Remove Applicant, add Accepted
-            app_role = member.guild.get_role(PS5_APPLICANT_ROLE_ID)
-            if app_role and app_role in member.roles:
-                try:
-                    await member.remove_roles(app_role, reason="Accepted: remove PS5 Applicant")
-                except Exception:
-                    pass
-
-            acc_role = member.guild.get_role(PS5_ACCEPTED_ROLE_ID)
-            if acc_role and acc_role not in member.roles:
-                try:
-                    await member.add_roles(acc_role, reason="Accepted: add PS5 Accepted")
-                except Exception:
-                    pass
-
-            # Add PS5 base category roles (SASP/BCSO)
-            for rid in PS5_PSO_ROLES:
-                r = member.guild.get_role(rid)
-                if r and r not in member.roles:
-                    try:
-                        await member.add_roles(r, reason="PS5: add PSO category roles")
-                    except Exception:
-                        pass
-
-            # Callsign + log
-            callsign = _gen_callsign(member.name)
-            try:
-                await member.edit(nick=callsign, reason="PS5: cadet callsign")
-            except Exception:
-                pass
-            await _log_callsign(member.guild, member, callsign, "PS5")
-
+    try:
+        await member.edit(nick=callsign)
     except Exception:
-        # Quiet fail to avoid breaking join flow
         pass
 
-# ================================================================
-# SECTION 7 — OAuth Web Server (/auth) (UNCHANGED BEHAVIOR)
-# ================================================================
+    log_channel = member.guild.get_channel(CALLSIGN_LOG_CHANNEL)
+    if log_channel:
+        await log_channel.send(f"📋 Callsign assigned: **{callsign}** → {member.mention} ({dept})")
 
-app = Flask(__name__)
-
-@app.route("/auth")
-def auth_grant():
-    code = request.args.get("code")
-    if not code:
-        return "No code provided", 400
-
-    # Exchange code for token
-    data = {
-        "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET,
-        "grant_type": "authorization_code",
-        "code": code,
-        "redirect_uri": REDIRECT_URI,
-    }
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
-    r = requests.post("https://discord.com/api/oauth2/token", data=data, headers=headers)
-    if r.status_code != 200:
-        return f"Token exchange failed: {r.text}", 400
-
-    access_token = r.json().get("access_token")
-    if not access_token:
-        return "Failed to get access token", 400
-
-    # Get user info
-    user = requests.get(
-        "https://discord.com/api/users/@me",
-        headers={"Authorization": f"Bearer {access_token}"}
-    ).json()
-    user_id = int(user["id"])
-
-    # Add to PS4 + PS5 (HQ already handled separately by you)
-    for gid in (PS4_GUILD_ID, PS5_GUILD_ID):
-        try:
-            url = f"https://discord.com/api/guilds/{gid}/members/{user_id}"
-            requests.put(url, json={"access_token": access_token},
-                         headers={"Authorization": f"Bot {BOT_TOKEN}"}, timeout=10)
-        except Exception:
-            pass
-
-    return f"<h2>✅ Welcome {user.get('username','User')}!</h2><p>You’ve been added to the servers. You can return to Discord now.</p>"
-
-# ================================================================
-# SECTION 8 — Panel Bootstrap & Startup
-# ================================================================
-
+# =====================================================
+# SECTION 9 - Startup + Run
+# =====================================================
 @bot.event
 async def on_ready():
-    print(f"✅ Application Bot ready as {bot.user} (ID: {bot.user.id})")
-
-    try:
-        # Permanent Application Panel Channel (HQ)
-        channel = bot.get_channel(1324115220725108877)  # <-- your permanent panel channel ID
-
-        if channel:
-            embed = Embed(
-                title="📋 LSRP Network Applications",
-                description=(
-                    "Welcome to the Los Santos Roleplay Network™ Application Center.\n\n"
-                    "Please select the department you wish to apply for using the dropdown menu below.\n\n"
-                    "Once selected, you will be guided through the application process in your DMs."
-                ),
-                color=0x2F3136
-            )
-
-            # Attach dropdown view
-            view = DepartmentDropdownView()  # Make sure this matches your dropdown class name
-            await channel.send(embed=embed, view=view)
-
-    except Exception as e:
-        print(f"⚠️ Failed to spawn panel: {e}")
-
-
-# ================================================================
-# RUN
-# ================================================================
-
-def _run_web():
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8080")))
+    bot.add_view(ApplicationPanel())  # keep panel dropdown alive
+    logger.info(f"✅ Application Bot ready as {bot.user}")
 
 if __name__ == "__main__":
-    if not BOT_TOKEN:
-        raise RuntimeError("BOT_TOKEN is missing.")
-    Thread(target=_run_web, daemon=True).start()
     bot.run(BOT_TOKEN)
+
+
+
+

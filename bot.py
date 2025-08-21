@@ -332,22 +332,15 @@ async def assign_callsign(member: discord.Member, dept: str):
 # =====================================================
 @bot.event
 async def on_ready():
-    bot.add_view(ApplicationPanel())  # keep panel dropdown alive
-    logger.info(f"✅ Application Bot ready as {bot.user}")
-
-@bot.event
-async def on_ready():
     bot.add_view(ApplicationPanel())  # keep dropdown alive
 
-    # Auto-post panel in permanent channel
     try:
         channel = bot.get_channel(APPLICATION_PANEL_CHANNEL_ID)
         if channel:
-            # Clear the channel if needed, then post fresh panel
             await post_panel(channel)
-            logger.info("✅ Permanent application panel posted.")
+            logger.info(f"✅ Permanent application panel posted in #{channel.name} ({channel.id})")
         else:
-            logger.warning("⚠️ Could not find the panel channel.")
+            logger.error(f"❌ Could not find the application panel channel ID: {APPLICATION_PANEL_CHANNEL_ID}")
     except Exception as e:
         logger.error(f"❌ Failed to post panel: {e}")
 

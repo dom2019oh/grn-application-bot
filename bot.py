@@ -176,32 +176,83 @@ class Q4Buttons(View):
         self.stop()
 
 # =====================================================
-# SECTION 4 - PSO Application Flow (20 Questions, Q4 buttons)
+# SECTION 3.1 - Platform & Sub-Department Selectors
 # =====================================================
-PSO_QUESTIONS = [
-    "1. What is your Discord username?",
-    "2. How old are you in real life?",
-    "3. Please state your Date of Birth. (e.g., 16th June 2010)",
-    "4. BUTTONS",  # special case
-    "5. Explain the 'No Life Rule' in the best of your ability.",
-    "6. What does VDM, RDM, and FRP mean? Describe.",
-    "7. Do you have any roleplay experience?",
-    "8. What time zone are you from?",
-    "9. Describe what a 10-11 means.",
-    "10. You see a suspect with a knife coming at you. Choose: Ask him / Taser / Run / Shoot",
-    "11. What does a 10-80 mean?",
-    "12. How would you handle a 10-11?",
-    "13. You arrive at a robbery scene, suspect yells 'I have a bomb!!' – what do you do?",
-    "14. What does Code 1, 2, and 3 mean?",
-    "15. When you go on duty, what 10 codes do you use?",
-    "16. As a cadet, are you eligible to drive on your own?",
-    "17. You see a sniper on a hilltop. You have a pistol and radio. What do you do?",
-    "18. How would you handle a noise complaint?",
-    "19. Choose the correct cadet loadout.",
-    "20. What is a 10-99?"
-]
+class PlatformSelect(View):
+    def __init__(self):
+        super().__init__(timeout=60)
+        self.value = None
 
+    @discord.ui.select(
+        placeholder="Select your platform...",
+        options=[
+            discord.SelectOption(label="PS4", value="PS4"),
+            discord.SelectOption(label="PS5", value="PS5"),
+        ],
+        custom_id="platform_select"
+    )
+    async def select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        self.value = select.values[0]
+        await interaction.response.defer()
+        self.stop()
+
+
+class SubDeptSelect(View):
+    def __init__(self):
+        super().__init__(timeout=60)
+        self.value = None
+
+    @discord.ui.select(
+        placeholder="Select your sub-department...",
+        options=[
+            discord.SelectOption(label="San Andreas State Police (SASP)", value="SASP"),
+            discord.SelectOption(label="Blaine County Sheriff's Office (BCSO)", value="BCSO"),
+        ],
+        custom_id="subdept_select"
+    )
+    async def select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        self.value = select.values[0]
+        await interaction.response.defer()
+        self.stop()
+
+
+# =====================================================
+# SECTION 4 - PSO Application Flow (with platform + sub-dept)
+# =====================================================
 async def run_pso_application(user: discord.User, channel: discord.DMChannel):
+    # Step 1: Platform select
+    pview = PlatformSelect()
+    await channel.send("Please select your platform:", view=pview)
+    await pview.wait()
+    platform = pview.value or "Not selected"
+
+    # Step 2: Sub-department select
+    sview = SubDeptSelect()
+    await channel.send("Please select your sub-department:", view=sview)
+    await sview.wait()
+    subdept = sview.value or "Not selected"
+
+    # Step 3: Confirmation embed
+    confirm = discord.Embed(
+        title="Application Details Confirmed",
+        description=f"**Department:** PSO\n**Sub-Department:** {subdept}\n**Platform:** {platform}\n\n"
+                    "✅ Selections saved. I'll now begin your application questions.\n"
+                    "⏳ Time left: 35 minutes",
+        color=discord.Color.blue()
+    )
+    await channel.send(embed=confirm)
+
+    # Step 3.1: Staff log
+    log_channel = bot.get_channel(STAFF_REVIEW_CHANNEL)
+    if log_channel:
+        await log_channel.send(
+            f"📋 **New PSO Application Started**\n"
+            f"👤 Applicant: {user.mention}\n"
+            f"🛡 Sub-Department: {subdept}\n"
+            f"🎮 Platform: {platform}"
+        )
+
+    # Step 4: Run questions
     responses = []
     for q in PSO_QUESTIONS:
         if q.startswith("4."):
@@ -222,33 +273,37 @@ async def run_pso_application(user: discord.User, channel: discord.DMChannel):
             return None
     return responses
 
-# =====================================================
-# SECTION 5 - Civilian Ops Application Flow (20 Questions, Q4 buttons)
-# =====================================================
-CIVILIAN_QUESTIONS = [
-    "1. What is your Discord username?",
-    "2. How old are you in real life?",
-    "3. Please state your Date of Birth.",
-    "4. BUTTONS",
-    "5. You are driving and run a red light. Police pull you over. How do you respond?",
-    "6. What is FailRP? Explain with an example.",
-    "7. What is FearRP? Explain with an example.",
-    "8. You crash your vehicle into another. How do you handle it?",
-    "9. Your character just lost their job. What are some legal RP scenarios you could pursue?",
-    "10. What are three things civilians CANNOT do in roleplay?",
-    "11. Explain the difference between passive RP and active RP.",
-    "12. What are some examples of creative civilian roleplay scenes you would do?",
-    "13. You are in a bank when a robbery happens. What do you do?",
-    "14. If your character was drunk, how would you RP that realistically?",
-    "15. You win the lottery in-game. What would your RP look like after that?",
-    "16. Someone meta-games against you. How do you respond?",
-    "17. How do you ensure you are not powergaming during a scene?",
-    "18. What are some examples of realistic civilian crimes you could roleplay?",
-    "19. How would you RP a court appearance or traffic ticket?",
-    "20. Why do you want to be part of Civilian Operations?"
-]
 
+# =====================================================
+# SECTION 5 - Civilian Ops Application Flow (with platform)
+# =====================================================
 async def run_co_application(user: discord.User, channel: discord.DMChannel):
+    # Step 1: Platform select
+    pview = PlatformSelect()
+    await channel.send("Please select your platform:", view=pview)
+    await pview.wait()
+    platform = pview.value or "Not selected"
+
+    # Step 2: Confirmation embed
+    confirm = discord.Embed(
+        title="Application Details Confirmed",
+        description=f"**Department:** Civilian Operations\n**Platform:** {platform}\n\n"
+                    "✅ Selections saved. I'll now begin your application questions.\n"
+                    "⏳ Time left: 35 minutes",
+        color=discord.Color.green()
+    )
+    await channel.send(embed=confirm)
+
+    # Step 2.1: Staff log
+    log_channel = bot.get_channel(STAFF_REVIEW_CHANNEL)
+    if log_channel:
+        await log_channel.send(
+            f"📋 **New Civilian Operations Application Started**\n"
+            f"👤 Applicant: {user.mention}\n"
+            f"🎮 Platform: {platform}"
+        )
+
+    # Step 3: Run questions
     responses = []
     for q in CIVILIAN_QUESTIONS:
         if q.startswith("4."):
@@ -269,33 +324,37 @@ async def run_co_application(user: discord.User, channel: discord.DMChannel):
             return None
     return responses
 
-# =====================================================
-# SECTION 6 - SAFR Application Flow (20 Questions, Q4 buttons)
-# =====================================================
-SAFR_QUESTIONS = [
-    "1. What is your Discord username?",
-    "2. How old are you in real life?",
-    "3. Please state your Date of Birth.",
-    "4. BUTTONS",
-    "5. Explain what 'staging' means when arriving at a fire/EMS scene.",
-    "6. What is the difference between ALS and BLS?",
-    "7. You arrive at a car crash. What steps do you take?",
-    "8. You see a burning building. What are your priorities?",
-    "9. You arrive at a scene with multiple victims. How do you triage?",
-    "10. What does 'Code 0' mean in Fire/EMS?",
-    "11. How do you handle roleplaying a patient refusing treatment?",
-    "12. How would you roleplay smoke inhalation?",
-    "13. What tools does a firefighter typically carry?",
-    "14. What are the three sides of the fire triangle?",
-    "15. How would you roleplay CPR?",
-    "16. You’re first on scene to a vehicle fire. Walk through your actions.",
-    "17. How do you roleplay dispatching an ambulance?",
-    "18. You respond to a false alarm. How do you roleplay that?",
-    "19. How would you RP burnout or exhaustion after a long shift?",
-    "20. Why do you want to join SAFR?"
-]
 
+# =====================================================
+# SECTION 6 - SAFR Application Flow (with platform)
+# =====================================================
 async def run_safr_application(user: discord.User, channel: discord.DMChannel):
+    # Step 1: Platform select
+    pview = PlatformSelect()
+    await channel.send("Please select your platform:", view=pview)
+    await pview.wait()
+    platform = pview.value or "Not selected"
+
+    # Step 2: Confirmation embed
+    confirm = discord.Embed(
+        title="Application Details Confirmed",
+        description=f"**Department:** San Andreas Fire & Rescue\n**Platform:** {platform}\n\n"
+                    "✅ Selections saved. I'll now begin your application questions.\n"
+                    "⏳ Time left: 35 minutes",
+        color=discord.Color.red()
+    )
+    await channel.send(embed=confirm)
+
+    # Step 2.1: Staff log
+    log_channel = bot.get_channel(STAFF_REVIEW_CHANNEL)
+    if log_channel:
+        await log_channel.send(
+            f"📋 **New SAFR Application Started**\n"
+            f"👤 Applicant: {user.mention}\n"
+            f"🎮 Platform: {platform}"
+        )
+
+    # Step 3: Run questions
     responses = []
     for q in SAFR_QUESTIONS:
         if q.startswith("4."):
@@ -315,6 +374,7 @@ async def run_safr_application(user: discord.User, channel: discord.DMChannel):
             await channel.send("⏳ Application timed out. Please re-apply.")
             return None
     return responses
+
 
 # =====================================================
 # SECTION 7 - Staff Review System

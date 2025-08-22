@@ -253,12 +253,13 @@ class DepartmentSelect(Select):
             min_values=1,
             max_values=1,
             options=[
-                discord.SelectOption(label="Public Safety Office (PSO)", value="PSO", description="BCSO / SASP"),
-                discord.SelectOption(label="Civilian Operations (CO)", value="CO", description="Civilian Roleplay"),
-                discord.SelectOption(label="San Andreas Fire & Rescue (SAFR)", value="SAFR", description="Fire & EMS"),
+                discord.SelectOption(label="Public Safety Office (PSO)", value="PSO"),
+                discord.SelectOption(label="Civilian Operations (CO)", value="CO"),
+                discord.SelectOption(label="San Andreas Fire & Rescue (SAFR)", value="SAFR"),
             ],
-            custom_id="lsrp_app_panel_dept_select"  # <-- fixed id for persistent view
+            custom_id="lsrp_app_panel_dept_select"  # 👈 FIX: required for persistence
         )
+
 
     async def callback(self, interaction: discord.Interaction):
         try:

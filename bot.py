@@ -56,7 +56,7 @@ tree = bot.tree
 class ApplicationPanel(View):
     def __init__(self):
         super().__init__(timeout=None)  # must be None for persistence
-        self.add_item(Select(
+        self.select = Select(
             placeholder="Select a department to apply for...",
             custom_id="application_panel_select",  # REQUIRED for persistence
             options=[
@@ -64,7 +64,33 @@ class ApplicationPanel(View):
                 discord.SelectOption(label="Civilian Operations (CO)", value="co"),
                 discord.SelectOption(label="San Andreas Fire & Rescue (SAFR)", value="safr"),
             ]
-        ))
+        )
+        self.select.callback = self.select_callback
+        self.add_item(self.select)
+
+    async def select_callback(self, interaction: discord.Interaction):
+        choice = self.select.values[0]
+
+        if choice == "pso":
+            await interaction.response.send_message(
+                "✅ Starting your **PSO Application** in DMs!", ephemeral=True
+            )
+            channel = await interaction.user.create_dm()
+            await run_pso_application(interaction.user, channel)
+
+        elif choice == "co":
+            await interaction.response.send_message(
+                "✅ Starting your **Civilian Operations Application** in DMs!", ephemeral=True
+            )
+            channel = await interaction.user.create_dm()
+            await run_co_application(interaction.user, channel)
+
+        elif choice == "safr":
+            await interaction.response.send_message(
+                "✅ Starting your **SAFR Application** in DMs!", ephemeral=True
+            )
+            channel = await interaction.user.create_dm()
+            await run_safr_application(interaction.user, channel)
 
 
 # =====================================================

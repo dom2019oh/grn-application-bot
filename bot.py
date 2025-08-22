@@ -54,15 +54,17 @@ tree = bot.tree
 # =====================================================
 class ApplicationPanel(View):
     def __init__(self):
-        super().__init__(timeout=None)
+        super().__init__(timeout=None)  # must be None for persistence
         self.add_item(Select(
             placeholder="Select a department to apply for...",
+            custom_id="application_panel_select",  # REQUIRED for persistence
             options=[
                 discord.SelectOption(label="Public Safety Office (PSO)", value="pso"),
                 discord.SelectOption(label="Civilian Operations (CO)", value="co"),
                 discord.SelectOption(label="San Andreas Fire & Rescue (SAFR)", value="safr"),
             ]
         ))
+
 
 # =====================================================
 # SECTION 2 - Panel Posting (Auto on Startup)

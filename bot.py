@@ -1,8 +1,8 @@
 # =====================================================
 # LSRP Network System™® — Application Bot (Clean Application System)
 # - Original panel & DM flow preserved
-# - Q4 uses buttons (all departments)
-# - 45-minute timer
+# - Q4 uses buttons (all departments) with robust failsafes
+# - Pre-step selectors (Platform; Sub-dept for PSO) + green confirmation embed
 # - HQ swap (Verified -> Official) + remove Applicant roles on Accept
 # - PS5 mirroring for SASP / BCSO same as PS4
 # - /auth_grant unchanged (grants Verified + Official)
@@ -32,13 +32,13 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")  # set in Railway variables
 
 # Guilds
 HQ_GUILD_ID = 1324117813878718474
-PS5_GUILD_ID = 1401903156274790441  # for info/mirroring only
+PS5_GUILD_ID = 1401903156274790441  # info only
 
 # Channels
 APPLICATION_PANEL_CHANNEL_ID = 1324115220725108877  # where panel auto-posts
 APPLICATION_TIPS_CHANNEL = 1370854351828029470     # mention in panel body
 STAFF_REVIEW_CHANNEL = 1366431401054048357         # where full apps go for review
-CALLSIGN_LOG_CHANNEL = 1396076403052773396         # callsign logs (optional, left as-is)
+CALLSIGN_LOG_CHANNEL = 1396076403052773396         # callsign logs (kept)
 
 # Roles (HQ)
 VERIFIED_ROLE_ID = 1367753287872286720
@@ -100,12 +100,10 @@ class ApplicationPanel(View):
                 "❌ I couldn't DM you. Please enable DMs and try again.", ephemeral=True
             )
 
-        # Acknowledge in server ephemerally
         await interaction.response.send_message(
             f"✅ Starting your **{choice.upper()}** application in DMs…", ephemeral=True
         )
 
-        # Kick off the flow
         if choice == "pso":
             await run_pso_application(interaction.user, dm)
         elif choice == "co":
@@ -156,43 +154,120 @@ async def post_panel(channel: discord.TextChannel):
     await channel.send(embed=embed, view=ApplicationPanel())
 
 # =====================================================
-# SECTION 2 — Q4 Buttons (used by all departments)
+# SECTION 2 — Q4 Buttons (robust + failsafes)
 # =====================================================
 class Q4Buttons(View):
     def __init__(self):
         super().__init__(timeout=120)
         self.choice: Optional[str] = None
+        self._locked = False
+
+    async def _finalize(self, interaction: discord.Interaction, value: str):
+        if self._locked:
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.defer()
+            except Exception:
+                pass
+            return
+
+        self._locked = True
+        self.choice = value
+
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer()
+        except Exception:
+            pass
+
+        try:
+            self.disable_all_items()
+            await interaction.message.edit(view=self)
+        except Exception:
+            try:
+                await interaction.followup.send("Selection saved.", wait=True)
+            except Exception:
+                pass
+
+        self.stop()
 
     @discord.ui.button(label="Friend", style=discord.ButtonStyle.blurple, custom_id="q4_friend")
     async def q4_friend(self, interaction: discord.Interaction, button: Button):
-        self.choice = "Friend"
-        self.disable_all_items()
-        await interaction.response.edit_message(view=self)
-        self.stop()
+        await self._finalize(interaction, "Friend")
 
     @discord.ui.button(label="Instagram", style=discord.ButtonStyle.blurple, custom_id="q4_instagram")
     async def q4_instagram(self, interaction: discord.Interaction, button: Button):
-        self.choice = "Instagram"
-        self.disable_all_items()
-        await interaction.response.edit_message(view=self)
-        self.stop()
+        await self._finalize(interaction, "Instagram")
 
     @discord.ui.button(label="Partnership", style=discord.ButtonStyle.blurple, custom_id="q4_partnership")
     async def q4_partnership(self, interaction: discord.Interaction, button: Button):
-        self.choice = "Partnership"
-        self.disable_all_items()
-        await interaction.response.edit_message(view=self)
-        self.stop()
+        await self._finalize(interaction, "Partnership")
 
     @discord.ui.button(label="Other", style=discord.ButtonStyle.blurple, custom_id="q4_other")
     async def q4_other(self, interaction: discord.Interaction, button: Button):
-        self.choice = "Other"
-        self.disable_all_items()
-        await interaction.response.edit_message(view=self)
+        await self._finalize(interaction, "Other")
+
+
+async def ask_q4_with_buttons(channel: discord.DMChannel, title: str, color: discord.Color) -> Optional[str]:
+    """Send Q4 with buttons, return the chosen label or None on timeout."""
+    view = Q4Buttons()
+    msg = await channel.send(
+        embed=discord.Embed(title=title, description="How did you find us?", color=color),
+        view=view
+    )
+    try:
+        await asyncio.wait_for(view.wait(), timeout=view.timeout or 120)
+    except asyncio.TimeoutError:
+        try:
+            view.disable_all_items()
+            await msg.edit(view=view)
+        except Exception:
+            pass
+        return None
+    return view.choice or None
+
+# =====================================================
+# SECTION 3 — Pre-Application Selectors (embedded)
+# =====================================================
+class PlatformSelect(View):
+    def __init__(self):
+        super().__init__(timeout=60)
+        self.value = None
+
+    @discord.ui.select(
+        placeholder="Select your platform...",
+        options=[
+            discord.SelectOption(label="PS4", value="PS4"),
+            discord.SelectOption(label="PS5", value="PS5"),
+        ],
+        custom_id="platform_select"
+    )
+    async def select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        self.value = select.values[0]
+        await interaction.response.defer()
+        self.stop()
+
+
+class SubDeptSelect(View):
+    def __init__(self):
+        super().__init__(timeout=60)
+        self.value = None
+
+    @discord.ui.select(
+        placeholder="Select your sub-department...",
+        options=[
+            discord.SelectOption(label="San Andreas State Police (SASP)", value="SASP"),
+            discord.SelectOption(label="Blaine County Sheriff's Office (BCSO)", value="BCSO"),
+        ],
+        custom_id="subdept_select"
+    )
+    async def select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        self.value = select.values[0]
+        await interaction.response.defer()
         self.stop()
 
 # =====================================================
-# SECTION 3 — Questions (exact order preserved; Q4 handled by buttons)
+# SECTION 4 — Questions (exact order preserved; Q4 handled by buttons)
 # =====================================================
 PSO_QUESTIONS = [
     "What is your Discord username?",
@@ -264,7 +339,7 @@ SAFR_QUESTIONS = [
 ]
 
 # =====================================================
-# SECTION 4 — Helper functions: HQ swap, remove applicant, PS5 mirroring, callsigns
+# SECTION 5 — Helper functions: HQ swap, remove applicant, PS5 mirroring, callsigns
 # =====================================================
 async def remove_applicant_roles(member: discord.Member) -> bool:
     """Remove applicant role(s). Uses IDs if provided; else removes any role whose name contains 'applicant'."""
@@ -341,7 +416,7 @@ async def assign_callsign(member: discord.Member, dept_label: str):
             pass
 
 # =====================================================
-# SECTION 5 — DM Application Flows (same look & order; only Q4 uses buttons)
+# SECTION 6 — Shared question runner (Q4 uses buttons)
 # =====================================================
 async def ask_dept_questions(
     user: discord.User,
@@ -365,31 +440,18 @@ async def ask_dept_questions(
     start = discord.utils.utcnow()
 
     for i, q in enumerate(questions, start=1):
-        # Q4 buttons
         if i == 4:
-            view = Q4Buttons()
-            await channel.send(
-                embed=discord.Embed(
-                    title=f"Q{i}",
-                    description="How did you find us?",
-                    color=discord.Color.blurple(),
-                ),
-                view=view,
-            )
-            try:
-                await asyncio.wait_for(view.wait(), timeout=120)
-            except asyncio.TimeoutError:
+            answer = await ask_q4_with_buttons(channel, title=f"Q{i}", color=discord.Color.blurple())
+            if answer is None:
                 await channel.send("⏳ Timed out waiting for a selection. Please re-apply.")
                 return None
-            responses.append((f"Q{i}", view.choice or "No response"))
+            responses.append((f"Q{i}", answer))
             continue
 
-        # Normal text question
         await channel.send(
             embed=discord.Embed(title=f"Q{i}", description=q, color=discord.Color.blurple())
         )
 
-        # Remaining time check (overall 45 min window)
         def time_left_ok() -> bool:
             elapsed = (discord.utils.utcnow() - start).total_seconds()
             return elapsed < APPLICATION_TIMEOUT_SECS
@@ -412,9 +474,48 @@ async def ask_dept_questions(
 
     return responses
 
-
+# =====================================================
+# SECTION 7 — DM Application Flows (pre-step selectors + confirmation embed)
+# =====================================================
 async def run_pso_application(user: discord.User, channel: discord.DMChannel) -> None:
-    # Keep original behavior — ask PSO questions (Q4 buttons)
+    # Platform
+    pview = PlatformSelect()
+    await channel.send(
+        embed=discord.Embed(
+            title="Los Santos Roleplay Network™® | Application",
+            description="Department selected: **PSO**\n\nPlease select your platform below.",
+            color=discord.Color.blue()
+        ),
+        view=pview
+    )
+    await pview.wait()
+    platform = pview.value or "Not selected"
+
+    # Sub-department
+    sview = SubDeptSelect()
+    await channel.send(
+        embed=discord.Embed(
+            description="Please select your sub-department below.",
+            color=discord.Color.blue()
+        ),
+        view=sview
+    )
+    await sview.wait()
+    subdept = sview.value or "Not selected"
+
+    # Confirmation
+    confirm = discord.Embed(
+        title="Application Details Confirmed",
+        description=(f"**Department:** PSO\n"
+                     f"**Sub-Department:** {subdept}\n"
+                     f"**Platform:** {platform}\n\n"
+                     "✅ Selections saved. I'll now begin your application questions.\n"
+                     f"⏳ Time left: {APPLICATION_TIMEOUT_SECS // 60} minutes"),
+        color=discord.Color.green()
+    )
+    await channel.send(embed=confirm)
+
+    # Qs
     answers = await ask_dept_questions(user, channel, "PSO", PSO_QUESTIONS)
     if answers is None:
         return
@@ -428,17 +529,39 @@ async def run_pso_application(user: discord.User, channel: discord.DMChannel) ->
     embed = discord.Embed(title="📥 New PSO Application", color=discord.Color.blue())
     embed.set_author(name=str(user), icon_url=getattr(user.avatar, "url", discord.Embed.Empty))
     for q, a in answers:
-        # Avoid field length overflows
         embed.add_field(name=q, value=a[:1024] if a else "—", inline=False)
-
-    # Collect minimal meta fields you might already store elsewhere.
-    meta = {"dept": "PSO"}  # if you track platform/subdept separately, wire that back in your accept flow
-
+    meta = {"dept": "PSO", "platform": platform, "subdept": subdept}
     await staff_ch.send(embed=embed, view=ReviewButtons(applicant_id=user.id, meta=meta))
 
 
 async def run_co_application(user: discord.User, channel: discord.DMChannel) -> None:
-    answers = await ask_dept_questions(user, channel, "Civilian Operations (CO)", CIVILIAN_QUESTIONS)
+    # Platform
+    pview = PlatformSelect()
+    await channel.send(
+        embed=discord.Embed(
+            title="Los Santos Roleplay Network™® | Application",
+            description="Department selected: **Civilian Operations**\n\nPlease select your platform below.",
+            color=discord.Color.green()
+        ),
+        view=pview
+    )
+    await pview.wait()
+    platform = pview.value or "Not selected"
+
+    # Confirmation
+    confirm = discord.Embed(
+        title="Application Details Confirmed",
+        description=(f"**Department:** CO\n"
+                     f"**Sub-Department:** N/A\n"
+                     f"**Platform:** {platform}\n\n"
+                     "✅ Selections saved. I'll now begin your application questions.\n"
+                     f"⏳ Time left: {APPLICATION_TIMEOUT_SECS // 60} minutes"),
+        color=discord.Color.green()
+    )
+    await channel.send(embed=confirm)
+
+    # Qs
+    answers = await ask_dept_questions(user, channel, "CO", CIVILIAN_QUESTIONS)
     if answers is None:
         return
 
@@ -451,13 +574,38 @@ async def run_co_application(user: discord.User, channel: discord.DMChannel) -> 
     embed.set_author(name=str(user), icon_url=getattr(user.avatar, "url", discord.Embed.Empty))
     for q, a in answers:
         embed.add_field(name=q, value=a[:1024] if a else "—", inline=False)
-
-    meta = {"dept": "CO"}
+    meta = {"dept": "CO", "platform": platform}
     await staff_ch.send(embed=embed, view=ReviewButtons(applicant_id=user.id, meta=meta))
 
 
 async def run_safr_application(user: discord.User, channel: discord.DMChannel) -> None:
-    answers = await ask_dept_questions(user, channel, "San Andreas Fire & Rescue (SAFR)", SAFR_QUESTIONS)
+    # Platform
+    pview = PlatformSelect()
+    await channel.send(
+        embed=discord.Embed(
+            title="Los Santos Roleplay Network™® | Application",
+            description="Department selected: **San Andreas Fire & Rescue**\n\nPlease select your platform below.",
+            color=discord.Color.red()
+        ),
+        view=pview
+    )
+    await pview.wait()
+    platform = pview.value or "Not selected"
+
+    # Confirmation
+    confirm = discord.Embed(
+        title="Application Details Confirmed",
+        description=(f"**Department:** SAFR\n"
+                     f"**Sub-Department:** N/A\n"
+                     f"**Platform:** {platform}\n\n"
+                     "✅ Selections saved. I'll now begin your application questions.\n"
+                     f"⏳ Time left: {APPLICATION_TIMEOUT_SECS // 60} minutes"),
+        color=discord.Color.red()
+    )
+    await channel.send(embed=confirm)
+
+    # Qs
+    answers = await ask_dept_questions(user, channel, "SAFR", SAFR_QUESTIONS)
     if answers is None:
         return
 
@@ -470,18 +618,17 @@ async def run_safr_application(user: discord.User, channel: discord.DMChannel) -
     embed.set_author(name=str(user), icon_url=getattr(user.avatar, "url", discord.Embed.Empty))
     for q, a in answers:
         embed.add_field(name=q, value=a[:1024] if a else "—", inline=False)
-
-    meta = {"dept": "SAFR"}
+    meta = {"dept": "SAFR", "platform": platform}
     await staff_ch.send(embed=embed, view=ReviewButtons(applicant_id=user.id, meta=meta))
 
 # =====================================================
-# SECTION 6 — Staff Review Buttons (Accept / Deny)
+# SECTION 8 — Staff Review Buttons (Accept / Deny)
 # =====================================================
 class ReviewButtons(View):
     def __init__(self, applicant_id: int, meta: Dict[str, str]):
         super().__init__(timeout=None)  # persist
         self.applicant_id = applicant_id
-        self.meta = meta  # contains dept label; add platform/subdept if you store them
+        self.meta = meta  # contains dept/platform/subdept
 
     @discord.ui.button(label="✅ Accept", style=discord.ButtonStyle.green, custom_id="review_accept")
     async def accept(self, interaction: discord.Interaction, button: Button):
@@ -494,11 +641,13 @@ class ReviewButtons(View):
         await remove_applicant_roles(member)
         await hq_role_swap(member)
 
-        # Optional: Assign subdept if PSO metadata is known (platform/subdept not captured here by design
-        # to keep original flow unchanged). If you have them, call:
-        # await assign_ps_subdept(platform, subdept, member)
+        # Sub-dept on PS4/PS5 if provided (PSO only normally)
+        platform = (self.meta.get("platform") or "").upper()
+        subdept = (self.meta.get("subdept") or "").upper()
+        if platform in {"PS4", "PS5"} and subdept in {"SASP", "BCSO"}:
+            await assign_ps_subdept(platform, subdept, member)
 
-        # Callsign (left as in original)
+        # Callsign (kept)
         await assign_callsign(member, self.meta.get("dept", "Dept"))
 
         await interaction.response.send_message("✅ Applicant accepted.", ephemeral=True)
@@ -508,7 +657,6 @@ class ReviewButtons(View):
         except Exception:
             pass
 
-        # DM the user
         try:
             user = await bot.fetch_user(self.applicant_id)
             await user.send("✅ Your application has been **accepted**! Welcome to Los Santos Roleplay Network™®.")
@@ -531,13 +679,12 @@ class ReviewButtons(View):
             pass
 
 # =====================================================
-# SECTION 7 — /auth_grant (kept simple / same behavior)
+# SECTION 9 — /auth_grant (kept simple / same behavior)
 # =====================================================
 @tree.command(name="auth_grant", description="Grant access after application approval.")
 @app_commands.describe(member="Member to authorize")
 async def auth_grant(interaction: discord.Interaction, member: discord.Member):
     try:
-        # Keep as-is per your instruction: grant Verified + Official
         await member.add_roles(discord.Object(id=VERIFIED_ROLE_ID))
         await member.add_roles(discord.Object(id=OFFICIAL_ROLE_ID))
         await interaction.response.send_message(f"✅ {member.mention} authorized and roles applied.", ephemeral=True)
@@ -545,13 +692,13 @@ async def auth_grant(interaction: discord.Interaction, member: discord.Member):
         await interaction.response.send_message(f"❌ Failed: {e}", ephemeral=True)
 
 # =====================================================
-# SECTION 8 — Startup: persistent views + auto-post panel
+# SECTION 10 — Startup: persistent views + auto-post panel
 # =====================================================
 @bot.event
 async def on_ready():
     # Keep dropdown & review buttons alive across restarts
     bot.add_view(ApplicationPanel())
-    bot.add_view(ReviewButtons(applicant_id=0, meta={"dept": "N/A"}))  # registers the view class for persistence
+    bot.add_view(ReviewButtons(applicant_id=0, meta={"dept": "N/A"}))  # registers class for persistence
 
     # Auto-post panel (only if not already present in recent history)
     ch = bot.get_channel(APPLICATION_PANEL_CHANNEL_ID)

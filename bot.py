@@ -317,28 +317,79 @@ class DepartmentSelect(Select):
         except Exception as e:
             await report_interaction_error(interaction, e, "DepartmentSelect callback failed")
 
-class ApplicationPanel(SafeView):
+# =====================================================
+# SECTION — Application Panel (Original Layout + Persistent Select)
+# =====================================================
+
+# Tip: keep this banner URL near your other constants
+PANEL_IMAGE_URL = "https://cdn.discordapp.com/attachments/1317589676336611381/1405147584456032276/Sunset_Photography_Tumblr_Banner.png"
+
+class DepartmentSelect(discord.ui.Select):
     def __init__(self):
-        super().__init__(timeout=None)  # persistent
+        super().__init__(
+            placeholder="Select a department to begin…",
+            min_values=1,
+            max_values=1,
+            options=[
+                discord.SelectOption(label="Public Safety Office (PSO)", value="PSO", description="BCSO / SASP"),
+                discord.SelectOption(label="Civilian Operations (CO)", value="CO", description="Civilian Roleplay"),
+                discord.SelectOption(label="San Andreas Fire & Rescue (SAFR)", value="SAFR", description="Fire & EMS"),
+            ],
+            custom_id="lsrp_app_panel_dept_select"  # <- persistent across restarts
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        # keep your existing body here (DM intro + run_questions + add pending roles)
+        ...
+        # (don’t change the logic you already have)
+
+class ApplicationPanel(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)  # persistent view
         self.add_item(DepartmentSelect())
 
 async def post_panel(channel: discord.TextChannel):
-    tips = f"<#{APPLICATION_TIPS_CHANNEL}>"
+    tips_channel_mention = f"<#{APPLICATION_TIPS_CHANNEL}>"
+
+    title = "## 📥 Los Santos Roleplay Network™® — Applications."
+    intro = (
+        "**Hello prospective members!**\n\n"
+        "*We’re excited to have you on board—now it’s time to apply for access to our Main Server. "
+        "This is your first step toward becoming a fully engaged member and jumping into the action!*\n\n"
+        f"*For guidance, please head to {tips_channel_mention} where you’ll find everything you need to know about the process.*"
+    )
+
+    tips = (
+        "### 📌 A Few Tips Before You Start:\n"
+        "**1. Read the `Rules` Carefully.**\n\n"
+        "> Before submitting, make sure you’ve read through __all server rules and guidelines.__\n\n"
+        "**2. Take Your Time.**\n\n"
+        "> Don’t rush — fill out your application truthfully and provide good detail about your RP experience and goals.\n\n"
+        "**3. Be Honest & Authentic.**\n\n"
+        "> New to RP? That’s fine. Tell us how you plan to grow — everyone starts somewhere and we’re here to support you."
+    )
+
+    what_next = (
+        "### ⏳ What Happens Next?\n\n"
+        "*Once you submit, staff will review your application and get back to you within 30 minutes.*\n"
+        "Please keep your DMs open so the bot can message you with next steps."
+    )
+
+    choose_path = (
+        "## 🧭 Choose Your Path.\n\n"
+        "**Use the menu below to select your department:**\n"
+        "• `PSO` — *Public Safety Office (Law Enforcement: BCSO / SASP)*\n"
+        "• `CO` — *Civilian Operations (Civilian Roleplay)*\n"
+        "• `SAFR` — *San Andreas Fire & Rescue (Fire & EMS)*"
+    )
+
     embed = discord.Embed(
-        description=(
-            "## 📥 Los Santos Roleplay Network™® — Applications.\n\n"
-            "**Hello prospective members!**\n\n"
-            "*We’re excited to have you on board—now it’s time to apply for access to our Main Server.*\n\n"
-            f"For guidance, please head to {tips}.\n\n"
-            "### 🧭 Choose Your Path.\n"
-            "Use the menu below to select your department:\n"
-            "• `PSO` — Public Safety Office (BCSO/SASP)\n"
-            "• `CO` — Civilian Operations\n"
-            "• `SAFR` — San Andreas Fire & Rescue"
-        ),
+        title="",
+        description=f"{title}\n\n{intro}\n\n{tips}\n\n{what_next}\n\n{choose_path}",
         color=discord.Color.blurple()
     )
     embed.set_image(url=PANEL_IMAGE_URL)
+
     await channel.send(embed=embed, view=ApplicationPanel())
 
 # -------------------------

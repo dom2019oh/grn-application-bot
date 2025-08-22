@@ -250,12 +250,14 @@ class DepartmentSelect(Select):
     def __init__(self):
         super().__init__(
             placeholder="Select a department to begin…",
-            min_values=1, max_values=1,
+            min_values=1,
+            max_values=1,
             options=[
                 discord.SelectOption(label="Public Safety Office (PSO)", value="PSO", description="BCSO / SASP"),
                 discord.SelectOption(label="Civilian Operations (CO)", value="CO", description="Civilian Roleplay"),
                 discord.SelectOption(label="San Andreas Fire & Rescue (SAFR)", value="SAFR", description="Fire & EMS"),
             ],
+            custom_id="lsrp_app_panel_dept_select"  # <-- fixed id for persistent view
         )
 
     async def callback(self, interaction: discord.Interaction):
@@ -755,13 +757,13 @@ def run_web():
 # -------------------------
 @bot.event
 async def on_ready():
-    # persistent view for panel
+    # register persistent views
     try:
         bot.add_view(ApplicationPanel())
     except Exception:
         pass
 
-    # Sync commands to HQ (optional but helpful)
+    # sync slash commands (safe to leave as-is if you already had it)
     try:
         await tree.sync(guild=Object(id=HQ_GUILD_ID))
     except Exception:
@@ -771,19 +773,31 @@ async def on_ready():
     except Exception:
         pass
 
-    # Auto-post panel if not present in recent history
+    # robust autopost
     try:
         hq = bot.get_guild(HQ_GUILD_ID)
-        if hq:
+        if not hq:
+            print(f"[panel] HQ guild {HQ_GUILD_ID} not found or bot not in guild.")
+        else:
             ch = hq.get_channel(PANEL_CHANNEL_ID)
-            if isinstance(ch, discord.TextChannel):
-                async for m in ch.history(limit=25):
+            if not isinstance(ch, discord.TextChannel):
+                print(f"[panel] Panel channel {PANEL_CHANNEL_ID} not found or not a text channel.")
+            else:
+                found_existing = False
+                async for m in ch.history(limit=100):
                     if m.author == bot.user and m.components:
+                        # found a previous panel with components
+                        found_existing = True
                         break
-                else:
+
+                force = os.getenv("AUTO_POST_ALWAYS", "0") == "1"
+                if not found_existing or force:
                     await post_panel(ch)
+                    print(f"[panel] Posted application panel in #{ch.name} (forced={force}).")
+                else:
+                    print(f"[panel] Existing panel detected in #{ch.name}; not posting a duplicate.")
     except Exception as e:
-        print("Panel autopost error:", e)
+        print(f"[panel] Autopost error: {e}")
 
     print(f"✅ Bot online as {bot.user} ({bot.user.id})")
 

@@ -757,49 +757,31 @@ def run_web():
 # -------------------------
 @bot.event
 async def on_ready():
-    # register persistent views
     try:
+        # Register the persistent view so the dropdown works after restart
         bot.add_view(ApplicationPanel())
-    except Exception:
-        pass
 
-    # sync slash commands (safe to leave as-is if you already had it)
-    try:
-        await tree.sync(guild=Object(id=HQ_GUILD_ID))
-    except Exception:
-        pass
-    try:
-        await tree.sync()
-    except Exception:
-        pass
+        # Small delay to let cache warm up
+        await asyncio.sleep(2)
 
-    # robust autopost
-    try:
+        # Always try to post a fresh panel
         hq = bot.get_guild(HQ_GUILD_ID)
         if not hq:
-            print(f"[panel] HQ guild {HQ_GUILD_ID} not found or bot not in guild.")
-        else:
-            ch = hq.get_channel(PANEL_CHANNEL_ID)
-            if not isinstance(ch, discord.TextChannel):
-                print(f"[panel] Panel channel {PANEL_CHANNEL_ID} not found or not a text channel.")
-            else:
-                found_existing = False
-                async for m in ch.history(limit=100):
-                    if m.author == bot.user and m.components:
-                        # found a previous panel with components
-                        found_existing = True
-                        break
+            print(f"[panel] HQ guild {HQ_GUILD_ID} not found or bot not in it.")
+            return
 
-                force = os.getenv("AUTO_POST_ALWAYS", "0") == "1"
-                if not found_existing or force:
-                    await post_panel(ch)
-                    print(f"[panel] Posted application panel in #{ch.name} (forced={force}).")
-                else:
-                    print(f"[panel] Existing panel detected in #{ch.name}; not posting a duplicate.")
+        ch = hq.get_channel(PANEL_CHANNEL_ID)
+        if not isinstance(ch, discord.TextChannel):
+            print(f"[panel] Channel {PANEL_CHANNEL_ID} not found or not a text channel.")
+            return
+
+        await post_panel(ch)
+        print(f"✅ Posted application panel in #{ch.name}")
+
     except Exception as e:
-        print(f"[panel] Autopost error: {e}")
+        print(f"[panel] Failed to post: {e}")
 
-    print(f"✅ Bot online as {bot.user} ({bot.user.id})")
+    print(f"🟢 Bot ready as {bot.user}")
 
 # -------------------------
 # Run

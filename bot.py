@@ -72,38 +72,38 @@ async def post_panel(channel: discord.TextChannel):
 
     title = "## 📥 Los Santos Roleplay Network™® — Applications."
     intro = (
-        "**Hello prospective members!**\\n\\n"
+        "**Hello prospective members!**\n\n"
         "*We’re excited to have you on board—now it’s time to apply for access to our Main Server. "
-        "This is your first step toward becoming a fully engaged member and jumping into the action!*\\n\\n"
+        "This is your first step toward becoming a fully engaged member and jumping into the action!*\n\n"
         f"*For guidance, please head to {tips_channel_mention} where you’ll find everything you need to know about the process.*"
     )
 
     tips = (
-        "### 📌 A Few Tips Before You Start:\\n"
-        "**1. Read the `Rules` Carefully.**\\n\\n"
-        "> Before submitting, make sure you’ve read through __all server rules and guidelines.__\\n\\n"
-        "**2. Take Your Time.**\\n\\n"
-        "> Don’t rush — fill out your application truthfully and provide good detail about your RP experience and goals.\\n\\n"
-        "**3. Be Honest & Authentic.**\\n\\n"
+        "### 📌 A Few Tips Before You Start:\n"
+        "**1. Read the `Rules` Carefully.**\n\n"
+        "> Before submitting, make sure you’ve read through __all server rules and guidelines.__\n\n"
+        "**2. Take Your Time.**\n\n"
+        "> Don’t rush — fill out your application truthfully and provide good detail about your RP experience and goals.\n\n"
+        "**3. Be Honest & Authentic.**\n\n"
         "> New to RP? That’s fine. Tell us how you plan to grow - everyone starts somewhere and we’re here to support you."
     )
 
     what_next = (
-        "### ⏳ What Happens Next?\\n\\n"
-        "*Once you submit, staff will review your application and get back to you within 30 minutes.*\\n"
+        "### ⏳ What Happens Next?\n\n"
+        "*Once you submit, staff will review your application and get back to you within 30 minutes.*\n"
         "Please keep your DMs open so the bot can message you with next steps."
     )
 
     choose_path = (
-        "## 🧭 Choose Your Path.\\n\\n"
-        "**Use the menu below to select your department:**\\n"
-        "• `PSO` — *Public Safety Office (Law Enforcement: BCSO / SASP)*\\n"
-        "• `CO` — *Civilian Operations (Civilian Roleplay)*\\n"
+        "## 🧭 Choose Your Path.\n\n"
+        "**Use the menu below to select your department:**\n"
+        "• `PSO` — *Public Safety Office (Law Enforcement: BCSO / SASP)*\n"
+        "• `CO` — *Civilian Operations (Civilian Roleplay)*\n"
         "• `SAFR` — *San Andreas Fire & Rescue (Fire & EMS)*"
     )
 
     embed = discord.Embed(
-        description=f"{title}\\n\\n{intro}\\n\\n{tips}\\n\\n{what_next}\\n\\n{choose_path}",
+        description=f"{title}\n\n{intro}\n\n{tips}\n\n{what_next}\n\n{choose_path}",
         color=discord.Color.blurple()
     )
     embed.set_image(url=PANEL_IMAGE_URL)

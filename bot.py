@@ -246,18 +246,22 @@ class SafeView(View):
     async def on_error(self, error: Exception, item: discord.ui.Item, interaction: discord.Interaction) -> None:
         await report_interaction_error(interaction, error, f"View error in '{getattr(item, 'custom_id', getattr(item, 'label', '?'))}'")
 
-class DepartmentSelect(Select):
+class DepartmentSelect(discord.ui.Select):
     def __init__(self):
+        options = [
+            discord.SelectOption(label="PSO", description="Apply for Public Safety Office", emoji="🚓"),
+            discord.SelectOption(label="Civilian", description="Apply for Civilian Operations", emoji="🧑"),
+            discord.SelectOption(label="SAFD", description="Apply for Fire & EMS", emoji="🚒")
+        ]
         super().__init__(
-            placeholder="Select a department to begin…",
-            min_values=1,
-            max_values=1,
-            options=[
-                discord.SelectOption(label="Public Safety Office (PSO)", value="PSO"),
-                discord.SelectOption(label="Civilian Operations (CO)", value="CO"),
-                discord.SelectOption(label="San Andreas Fire & Rescue (SAFR)", value="SAFR"),
-            ],
-            custom_id="lsrp_app_panel_dept_select"  # 👈 FIX: required for persistence
+            placeholder="Choose your department...",
+            options=options,
+            custom_id="department_select"  # <- REQUIRED
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_message(
+            f"You selected **{self.values[0]}**!", ephemeral=True
         )
 
 
@@ -346,7 +350,7 @@ class DepartmentSelect(discord.ui.Select):
 
 class ApplicationPanel(discord.ui.View):
     def __init__(self):
-        super().__init__(timeout=None)  # persistent view
+        super().__init__(timeout=None)
         self.add_item(DepartmentSelect())
 
 async def post_panel(channel: discord.TextChannel):

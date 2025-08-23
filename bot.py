@@ -248,22 +248,17 @@ class SafeView(View):
 
 class DepartmentSelect(discord.ui.Select):
     def __init__(self):
-        options = [
-            discord.SelectOption(label="PSO", description="Apply for Public Safety Office", emoji="🚓"),
-            discord.SelectOption(label="Civilian", description="Apply for Civilian Operations", emoji="🧑"),
-            discord.SelectOption(label="SAFD", description="Apply for Fire & EMS", emoji="🚒")
-        ]
         super().__init__(
             placeholder="Choose your department...",
-            options=options,
-            custom_id="department_select"  # <- REQUIRED
+            min_values=1,
+            max_values=1,
+            options=[
+                discord.SelectOption(label="Public Safety Office (PSO)", value="PSO", emoji="🚓"),
+                discord.SelectOption(label="Civilian Operations (CO)", value="CO", emoji="🧑"),
+                discord.SelectOption(label="San Andreas Fire & Rescue (SAFR)", value="SAFR", emoji="🚒"),
+            ],
+            custom_id="lsrp_app_panel_dept_select"  # persistent
         )
-
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.send_message(
-            f"You selected **{self.values[0]}**!", ephemeral=True
-        )
-
 
     async def callback(self, interaction: discord.Interaction):
         try:
@@ -293,7 +288,7 @@ class DepartmentSelect(discord.ui.Select):
             )
             await dm.send(embed=intro)
 
-            # Directly start questions (your original flow)
+            # Start questions
             await run_questions(user)
             await interaction.followup.send("📬 I’ve sent you a DM to continue your application.", ephemeral=True)
 
@@ -303,7 +298,8 @@ class DepartmentSelect(discord.ui.Select):
                 dept_role_id = APPLICANT_DEPT_ROLES.get(dept)
                 if dept_role_id:
                     r = interaction.guild.get_role(dept_role_id)
-                    if r: roles_to_add.append(r)
+                    if r:
+                        roles_to_add.append(r)
                 pending_role = interaction.guild.get_role(ROLE_PENDING)
                 if pending_role:
                     roles_to_add.append(pending_role)

@@ -246,6 +246,67 @@ class SafeView(View):
     async def on_error(self, error: Exception, item: discord.ui.Item, interaction: discord.Interaction) -> None:
         await report_interaction_error(interaction, error, f"View error in '{getattr(item, 'custom_id', getattr(item, 'label', '?'))}'")
 
+# -------------------------
+# DM dropdowns for Platform and PSO Sub-Department
+# -------------------------
+class PlatformSelect(discord.ui.Select):
+    def __init__(self, user_id: int):
+        self.user_id = user_id
+        super().__init__(
+            placeholder="Select your platform…",
+            min_values=1,
+            max_values=1,
+            options=[
+                discord.SelectOption(label="PlayStation 5", value="PS5", emoji="🎮"),
+                discord.SelectOption(label="PlayStation 4", value="PS4", emoji="🎮"),
+                discord.SelectOption(label="Xbox Old Gen", value="XboxOG", emoji="🕹️"),
+            ],
+            custom_id=f"platform_select_{user_id}"
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        sess = app_sessions.get(self.user_id)
+        if not sess or interaction.user.id != self.user_id:
+            return await interaction.response.send_message("This selector isn’t for you.", ephemeral=True)
+        sess["platform"] = self.values[0]
+        await interaction.response.edit_message(content=f"✅ Platform: **{self.values[0]}** selected.", view=None)
+        self.view.stop()
+
+
+class PlatformSelectView(SafeView):
+    def __init__(self, user_id: int, *, timeout: float = 120):
+        super().__init__(timeout=timeout)
+        self.add_item(PlatformSelect(user_id))
+
+
+class SubdeptSelect(discord.ui.Select):
+    def __init__(self, user_id: int):
+        self.user_id = user_id
+        super().__init__(
+            placeholder="Select PSO Sub-Department…",
+            min_values=1,
+            max_values=1,
+            options=[
+                discord.SelectOption(label="SASP (Highway Patrol)", value="SASP", emoji="🚓"),
+                discord.SelectOption(label="BCSO (Sheriff’s Office)", value="BCSO", emoji="⭐"),
+            ],
+            custom_id=f"subdept_select_{user_id}"
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        sess = app_sessions.get(self.user_id)
+        if not sess or interaction.user.id != self.user_id:
+            return await interaction.response.send_message("This selector isn’t for you.", ephemeral=True)
+        sess["subdept"] = self.values[0]
+        await interaction.response.edit_message(content=f"✅ Sub-Department: **{self.values[0]}** selected.", view=None)
+        self.view.stop()
+
+
+class SubdeptSelectView(SafeView):
+    def __init__(self, user_id: int, *, timeout: float = 120):
+        super().__init__(timeout=timeout)
+        self.add_item(SubdeptSelect(user_id))
+
 class DepartmentSelect(discord.ui.Select):
     def __init__(self):
         super().__init__(
@@ -264,7 +325,7 @@ class DepartmentSelect(discord.ui.Select):
         try:
             await interaction.response.defer(ephemeral=True)
 
-            dept = self.values[0]
+            dept = self.values[0]  # PSO / CO / SAFR
             user = interaction.user
             app_sessions[user.id] = {
                 "dept": dept,
@@ -272,6 +333,9 @@ class DepartmentSelect(discord.ui.Select):
                 "answers": [],
                 "started_at": time.time(),
                 "deadline": time.time() + APP_TOTAL_TIME_SECONDS,
+                # will be filled by DM selects:
+                "platform": None,
+                "subdept": "N/A",
             }
             color = dept_color(dept)
 
@@ -280,13 +344,54 @@ class DepartmentSelect(discord.ui.Select):
                 title="📋 Los Santos Roleplay Network™® | Application",
                 description=(
                     f"Department selected: **{dept}**\n\n"
-                    "I’ll guide you through the application here in DMs.\n"
-                    f"⏳ You have **35 minutes** to complete all questions.\n"
-                    "If your DMs are closed, please enable them and select again."
+                    "Before we start, please confirm a few details below."
                 ),
                 color=color,
             )
             await dm.send(embed=intro)
+
+            # 1) Platform select
+            prompt_msg = await dm.send(
+                "Please choose your **platform**:",
+                view=PlatformSelectView(user.id)
+            )
+            view: PlatformSelectView = prompt_msg.components  # not used; we wait on the view object below
+            # wait for user to choose (view is in message, but we kept reference via constructor)
+            platform_view = PlatformSelectView(user.id)
+            # resend because we don't have the instance from Discord's serialization
+            await prompt_msg.edit(view=platform_view)
+            timed_out = await platform_view.wait()
+            if timed_out or not app_sessions[user.id].get("platform"):
+                await dm.send("⏳ Selector timed out. Please select from the panel again.")
+                app_sessions.pop(user.id, None)
+                return
+
+            # 2) If PSO, subdept select
+            if dept == "PSO":
+                subdept_msg = await dm.send(
+                    "Select your **PSO Sub-Department**:",
+                    view=SubdeptSelectView(user.id)
+                )
+                sub_view = SubdeptSelectView(user.id)
+                await subdept_msg.edit(view=sub_view)
+                sub_timed_out = await sub_view.wait()
+                if sub_timed_out or not app_sessions[user.id].get("subdept") or app_sessions[user.id]["subdept"] == "N/A":
+                    await dm.send("⏳ Selector timed out. Please select from the panel again.")
+                    app_sessions.pop(user.id, None)
+                    return
+
+            # Confirmation embed like your screenshot
+            sess = app_sessions[user.id]
+            confirm = Embed(
+                title="✅ Application Details Confirmed",
+                color=color,
+                description="Selections saved. I’ll now begin your application questions."
+            )
+            confirm.add_field(name="Department", value=sess["dept"], inline=False)
+            confirm.add_field(name="Sub-Department", value=sess.get("subdept", "N/A"), inline=False)
+            confirm.add_field(name="Platform", value=sess.get("platform", "N/A"), inline=False)
+            confirm.set_footer(text=f"Time left: {readable_remaining(sess['deadline'])}")
+            await dm.send(embed=confirm)
 
             # Start questions
             await run_questions(user)
@@ -304,7 +409,7 @@ class DepartmentSelect(discord.ui.Select):
                 if pending_role:
                     roles_to_add.append(pending_role)
                 member = interaction.guild.get_member(user.id) or await interaction.guild.fetch_member(user.id)
-                if roles_to_add:
+                if roles_to_add and member:
                     try:
                         await member.add_roles(*roles_to_add, reason="Application started")
                     except Exception:
@@ -317,7 +422,6 @@ class DepartmentSelect(discord.ui.Select):
                 await interaction.followup.send("⚠️ I couldn’t DM you. Please enable DMs and select again.", ephemeral=True)
         except Exception as e:
             await report_interaction_error(interaction, e, "DepartmentSelect callback failed")
-
 
 class ApplicationPanel(discord.ui.View):
     def __init__(self):
@@ -446,19 +550,16 @@ class ReviewButtons(SafeView):
     async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
             await interaction.response.defer(ephemeral=True)
-
-            # disable buttons
             for child in self.children:
                 child.disabled = True
             await interaction.message.edit(view=self)
 
-            # DM applicant
             try:
                 e = Embed(
                     title="🎉 Application Accepted",
                     description=(
                         f"Congratulations! You’ve been **accepted** into {self.dept}.\n\n"
-                        "A staff member will issue you a **one-time 6-digit verification code** soon.\n\n"
+                        "A staff member will issue you a **one-time 6-digit verification code** soon.\n"
                         "⚠️ Keep your DMs **open** — the code expires in **5 minutes** once sent."
                     ),
                     color=discord.Color.green()
@@ -489,19 +590,16 @@ class ReviewButtons(SafeView):
     async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
             await interaction.response.defer(ephemeral=True)
-
-            # disable buttons
             for child in self.children:
                 child.disabled = True
             await interaction.message.edit(view=self)
 
-            # DM applicant
             try:
                 e = Embed(
                     title="❌ Application Denied",
                     description=(
                         "Unfortunately, your application was **denied**.\n\n"
-                        "You may reapply after **12 hours**.\n\n"
+                        "You may reapply after **12 hours**.\n"
                         "Please take time to review the rules before submitting again."
                     ),
                     color=discord.Color.red()
@@ -517,9 +615,6 @@ class ReviewButtons(SafeView):
             await report_interaction_error(interaction, e, "Deny button failed")
 
 
-# -------------------------
-# Review post (embed + buttons)
-# -------------------------
 async def post_review(user: discord.User):
     sess = app_sessions.get(user.id)
     if not sess:
@@ -527,27 +622,35 @@ async def post_review(user: discord.User):
 
     dept  = sess.get("dept", "N/A")
     color = dept_color(dept)
+    platform = sess.get("platform", "N/A")
+    subdept  = sess.get("subdept", "N/A")
 
+    # Staff review embed (like your screenshot 3, plus platform/subdept)
     review = Embed(
         title="📂 New Application Submitted",
         color=color,
-        description=f"**Applicant:** {user.mention} (`{user.id}`)\n**Department:** {dept}\n"
+        description=(
+            f"**Applicant:** {user.mention} (`{user.id}`)\n"
+            f"**Department:** {dept}\n"
+            f"**Sub-Department:** {subdept}\n"
+            f"**Platform:** {platform}\n"
+        )
     )
     for idx, (q, a) in enumerate(sess.get("answers", []), start=1):
         name = f"Q{idx}: {q}"
         if len(name) > 256:
             name = name[:253] + "…"
-        review.add_field(name=name, value=a[:1000] if a else "—", inline=False)
+        review.add_field(name=name, value=(a[:1000] if a else "—"), inline=False)
 
     ch = bot.get_channel(APP_REVIEW_CHANNEL_ID)
     if ch:
         await ch.send(embed=review, view=ReviewButtons(user, dept))
 
+    # Applicant: submission status only (decision comes later via buttons)
     try:
-        # Applicant only gets submission notice here
         e = Embed(
             title="📋 Application Status",
-            description="✅ Application Submitted\n\nYour application has been delivered to staff for review.\nYou’ll receive a DM once a decision is made.",
+            description="✅ **Application Submitted**\nYour application has been delivered to staff for review. You’ll receive a DM once a decision is made.",
             color=color
         )
         await user.send(embed=e)

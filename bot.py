@@ -923,7 +923,30 @@ def oauth_handler():
     if put_resp.status_code not in (200, 201, 204):
         # ignore 400 already a member
         if not (put_resp.status_code == 400 and "already" in put_resp.text.lower()):
-            return f"Guild join failed: {put_resp.status_code} {put_resp.text}", 400
+            return f"Guild join failed: {put_resp.status_code} {put_resp.text}", 400    
+
+    # Verify member is actually in the guild
+    verify = requests.get(
+        f"https://discord.com/api/guilds/{target_guild_id}/members/{user_id}",
+        headers={"Authorization": f"Bot {BOT_TOKEN}"},
+        timeout=15
+    )
+    if verify.status_code != 200:
+        try:
+            hq = bot.get_guild(HQ_GUILD_ID)
+            log_ch = hq.get_channel(AUTH_CODE_LOG_CHANNEL) if hq else None
+            if log_ch:
+                asyncio.run_coroutine_threadsafe(
+                    log_ch.send(
+                        f"⚠️ **Join verify failed** for <@{user_id}> "
+                        f"| Guild `{target_guild_id}` | PUT:{put_resp.status_code} "
+                        f"| GET:{verify.status_code} {verify.text[:900]}"
+                    ),
+                    bot.loop
+                )
+        except Exception:
+            pass
+        return f"Join verify failed: {verify.status_code} {verify.text}", 400
 
     # Post-join role/callsign (PS4/PS5 mirrored), remove pending, grant accepted, etc.
     try:
@@ -975,12 +998,19 @@ def oauth_handler():
     except Exception as e:
         print("apply roles error:", e)
 
-    # Log success
+    # Log success (run from Flask thread safely)
     try:
         hq = bot.get_guild(HQ_GUILD_ID)
         log_ch = hq.get_channel(AUTH_CODE_LOG_CHANNEL) if hq else None
         if log_ch:
-            log_ch.send(f"✅ **Auth success** for <@{user_id}> | Dept `{pdata['dept']}` | Subdept `{pdata.get('subdept','N/A')}` | Platform `{pdata['platform']}` | Code `{pdata['code']}`")
+            asyncio.run_coroutine_threadsafe(
+                log_ch.send(
+                    f"✅ **Auth success** for <@{user_id}> "
+                    f"| Dept `{pdata['dept']}` | Subdept `{pdata.get('subdept','N/A')}` "
+                    f"| Platform `{pdata['platform']}` | Code `{pdata['code']}`"
+                ),
+                bot.loop
+            )
     except Exception:
         pass
 

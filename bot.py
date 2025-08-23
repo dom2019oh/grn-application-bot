@@ -322,27 +322,6 @@ class DepartmentSelect(discord.ui.Select):
         except Exception as e:
             await report_interaction_error(interaction, e, "DepartmentSelect callback failed")
 
-# =====================================================
-# SECTION — Application Panel (Original Layout + Persistent Select)
-# =====================================================
-
-# Tip: keep this banner URL near your other constants
-PANEL_IMAGE_URL = "https://cdn.discordapp.com/attachments/1317589676336611381/1405147584456032276/Sunset_Photography_Tumblr_Banner.png"
-
-class DepartmentSelect(discord.ui.Select):
-    def __init__(self):
-        super().__init__(
-            placeholder="Select a department to begin…",
-            min_values=1,
-            max_values=1,
-            options=[
-                discord.SelectOption(label="Public Safety Office (PSO)", value="PSO", description="BCSO / SASP"),
-                discord.SelectOption(label="Civilian Operations (CO)", value="CO", description="Civilian Roleplay"),
-                discord.SelectOption(label="San Andreas Fire & Rescue (SAFR)", value="SAFR", description="Fire & EMS"),
-            ],
-            custom_id="lsrp_app_panel_dept_select"  # <- persistent across restarts
-        )
-
     async def callback(self, interaction: discord.Interaction):
         # keep your existing body here (DM intro + run_questions + add pending roles)
         ...

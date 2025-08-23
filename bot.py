@@ -318,10 +318,6 @@ class DepartmentSelect(discord.ui.Select):
         except Exception as e:
             await report_interaction_error(interaction, e, "DepartmentSelect callback failed")
 
-    async def callback(self, interaction: discord.Interaction):
-        # keep your existing body here (DM intro + run_questions + add pending roles)
-        ...
-        # (don’t change the logic you already have)
 
 class ApplicationPanel(discord.ui.View):
     def __init__(self):

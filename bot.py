@@ -416,17 +416,120 @@ async def run_questions(user: discord.User):
     await post_review(user)
 
 # -------------------------
-# Review post (no Accept/Deny buttons per your “no more buttons” note)
+# Application Review System (Accept/Deny with logging)
+# -------------------------
+DECISION_LOG_CHANNEL = 1408751099581829130  # application-commands channel
+
+class ReviewButtons(SafeView):
+    def __init__(self, applicant: discord.User, dept: str):
+        super().__init__(timeout=None)
+        self.applicant = applicant
+        self.dept = dept
+
+    async def _log_decision(self, staff: discord.Member, decision: str, color: discord.Color):
+        ch = bot.get_channel(DECISION_LOG_CHANNEL)
+        if not ch:
+            return
+        embed = Embed(
+            title=f"📋 Application Decision — {decision}",
+            color=color,
+            description=(
+                f"**Applicant:** {self.applicant.mention} (`{self.applicant.id}`)\n"
+                f"**Department:** {self.dept}\n"
+                f"**Staff Member:** {staff.mention}\n"
+                f"**Decision Time:** <t:{int(time.time())}:f>"
+            )
+        )
+        await ch.send(embed=embed)
+
+    @discord.ui.button(label="✅ Accept", style=discord.ButtonStyle.success, custom_id="review_accept")
+    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            await interaction.response.defer(ephemeral=True)
+
+            # disable buttons
+            for child in self.children:
+                child.disabled = True
+            await interaction.message.edit(view=self)
+
+            # DM applicant
+            try:
+                e = Embed(
+                    title="🎉 Application Accepted",
+                    description=(
+                        f"Congratulations! You’ve been **accepted** into {self.dept}.\n\n"
+                        "A staff member will issue you a **one-time 6-digit verification code** soon.\n\n"
+                        "⚠️ Keep your DMs **open** — the code expires in **5 minutes** once sent."
+                    ),
+                    color=discord.Color.green()
+                )
+                e.add_field(
+                    name="Next steps",
+                    value="• Wait for staff to issue your code.\n• Do not share it.\n• Complete verification for main server access.",
+                    inline=False
+                )
+                e.add_field(
+                    name="Expectations",
+                    value="• Follow all community regulations and SOPs.\n"
+                          "• Be respectful and professional.\n"
+                          "• You’ll receive full access after verification.",
+                    inline=False
+                )
+                await self.applicant.send(embed=e)
+            except Exception:
+                await interaction.followup.send("⚠️ Could not DM the applicant (they may have DMs closed).", ephemeral=True)
+
+            await self._log_decision(interaction.user, "Accepted", discord.Color.green())
+            await interaction.followup.send(f"✅ Accepted {self.applicant.mention}", ephemeral=True)
+
+        except Exception as e:
+            await report_interaction_error(interaction, e, "Accept button failed")
+
+    @discord.ui.button(label="❌ Deny", style=discord.ButtonStyle.danger, custom_id="review_deny")
+    async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            await interaction.response.defer(ephemeral=True)
+
+            # disable buttons
+            for child in self.children:
+                child.disabled = True
+            await interaction.message.edit(view=self)
+
+            # DM applicant
+            try:
+                e = Embed(
+                    title="❌ Application Denied",
+                    description=(
+                        "Unfortunately, your application was **denied**.\n\n"
+                        "You may reapply after **12 hours**.\n\n"
+                        "Please take time to review the rules before submitting again."
+                    ),
+                    color=discord.Color.red()
+                )
+                await self.applicant.send(embed=e)
+            except Exception:
+                await interaction.followup.send("⚠️ Could not DM the applicant (they may have DMs closed).", ephemeral=True)
+
+            await self._log_decision(interaction.user, "Denied", discord.Color.red())
+            await interaction.followup.send(f"❌ Denied {self.applicant.mention}", ephemeral=True)
+
+        except Exception as e:
+            await report_interaction_error(interaction, e, "Deny button failed")
+
+
+# -------------------------
+# Review post (embed + buttons)
 # -------------------------
 async def post_review(user: discord.User):
     sess = app_sessions.get(user.id)
-    if not sess: return
+    if not sess:
+        return
 
     dept  = sess.get("dept", "N/A")
     color = dept_color(dept)
 
     review = Embed(
-        title="🗂️ New Application Submitted",
+        title="📂 New Application Submitted",
         color=color,
         description=f"**Applicant:** {user.mention} (`{user.id}`)\n**Department:** {dept}\n"
     )
@@ -438,10 +541,16 @@ async def post_review(user: discord.User):
 
     ch = bot.get_channel(APP_REVIEW_CHANNEL_ID)
     if ch:
-        await ch.send(embed=review)
+        await ch.send(embed=review, view=ReviewButtons(user, dept))
 
     try:
-        await user.send("✅ Your application has been submitted to staff for review.")
+        # Applicant only gets submission notice here
+        e = Embed(
+            title="📋 Application Status",
+            description="✅ Application Submitted\n\nYour application has been delivered to staff for review.\nYou’ll receive a DM once a decision is made.",
+            color=color
+        )
+        await user.send(embed=e)
     except Exception:
         pass
 

@@ -81,10 +81,18 @@ ROLE_BCSO_PS4 = 1401347339796348938
 ROLE_SASP_PS5 = 1407034121808646269
 ROLE_BCSO_PS5 = 1407034123561734245
 
-# Optional PS4 dept structures (starter/category). If you don’t want these, leave 0.
-ROLE_PSO_MAIN_PS4     = 1375046521904431124
-ROLE_PSO_CATEGORY_PS4 = 1404575562290434190
-ROLE_PSO_STARTER_PS4  = 1375046543329202186
+# ==========================
+# PS4 dept structures (hardcoded)
+# ==========================
+ROLE_PSO_MAIN_PS4     = 0  # removed umbrella PSO role
+ROLE_PSO_CATEGORY_PS4 = 1404575562290434190   # PSO Category / Rank(s)
+ROLE_PSO_STARTER_PS4  = 0  # handled per subdept below
+
+# PSO sub-department specific starter ranks
+ROLE_SASP_PS4         = 1401347813958226061   # SASP role
+ROLE_BCSO_PS4         = 1401347339796348938   # BCSO role
+ROLE_SASP_CADET_PS4   = 1407034140122794045   # SASP Cadet starter role
+ROLE_BCSO_PROB_PS4    = 1407034141808060426   # BCSO Probationary starter role
 
 ROLE_CO_MAIN_PS4      = 1375046547678429195
 ROLE_CO_CATEGORY_PS4  = 1375046548747980830
@@ -94,18 +102,26 @@ ROLE_SAFR_MAIN_PS4    = 1401347818873946133
 ROLE_SAFR_CATEGORY_PS4= 1375046571653201961
 ROLE_SAFR_STARTER_PS4 = 1375046583153856634
 
-# If you have PS5 equivalents, add here; otherwise they can remain 0 (skipped gracefully).
-ROLE_PSO_MAIN_PS5     = int(os.getenv("ROLE_PSO_MAIN_PS5", "0"))
-ROLE_PSO_CATEGORY_PS5 = int(os.getenv("ROLE_PSO_CATEGORY_PS5", "0"))
-ROLE_PSO_STARTER_PS5  = int(os.getenv("ROLE_PSO_STARTER_PS5", "0"))
+# ==========================
+# PS5 dept structures (hardcoded)
+# ==========================
+ROLE_PSO_MAIN_PS5     = 0  # removed umbrella PSO role
+ROLE_PSO_CATEGORY_PS5 = 1407034125006219326   # PSO Category / Rank(s)
+ROLE_PSO_STARTER_PS5  = 0  # handled per subdept below
 
-ROLE_CO_MAIN_PS5      = int(os.getenv("ROLE_CO_MAIN_PS5", "0"))
-ROLE_CO_CATEGORY_PS5  = int(os.getenv("ROLE_CO_CATEGORY_PS5", "0"))
-ROLE_CO_STARTER_PS5   = int(os.getenv("ROLE_CO_STARTER_PS5", "0"))
+# PSO sub-department specific starter ranks
+ROLE_SASP_PS5         = 1407034121808646269   # SASP role
+ROLE_BCSO_PS5         = 1407034123561734245   # BCSO role
+ROLE_SASP_CADET_PS5   = 1407034136591786044   # SASP Cadet starter role
+ROLE_BCSO_PROB_PS5    = 1407034138121166868   # BCSO Probationary starter role
 
-ROLE_SAFR_MAIN_PS5    = int(os.getenv("ROLE_SAFR_MAIN_PS5", "0"))
-ROLE_SAFR_CATEGORY_PS5= int(os.getenv("ROLE_SAFR_CATEGORY_PS5", "0"))
-ROLE_SAFR_STARTER_PS5 = int(os.getenv("ROLE_SAFR_STARTER_PS5", "0"))
+ROLE_CO_MAIN_PS5      = 1407034127829856326   # Civilian Operations main
+ROLE_CO_CATEGORY_PS5  = 1407034129257541683   # Civilian Category / Rank(s)
+ROLE_CO_STARTER_PS5   = 1407034130812078130   # Civilian Starter
+
+ROLE_SAFR_MAIN_PS5    = 1407034132328595477   # Fire/EMS main
+ROLE_SAFR_CATEGORY_PS5= 1407034133808320594   # Fire/EMS Category / Rank(s)
+ROLE_SAFR_STARTER_PS5 = 1407034135200034820   # Fire/EMS Starter
 
 # Visuals
 PANEL_IMAGE_URL = "https://cdn.discordapp.com/attachments/1317589676336611381/1405147584456032276/Sunset_Photography_Tumblr_Banner.png"
@@ -661,67 +677,100 @@ async def post_review(user: discord.User):
     app_sessions.pop(user.id, None)
 
 # -------------------------
-# Role Swap + PS5 mirroring (called after OAuth success)
+# Role Swap + PS4 mirroring (PSO subdept + starter roles)
 # -------------------------
 async def assign_ps_roles_ps4(member: discord.Member, dept: str, subdept: str | None):
-    to_add = []
+    to_add: list[discord.Role] = []
 
     if dept == "PSO":
-        for rid in (ROLE_PSO_MAIN_PS4, ROLE_PSO_CATEGORY_PS4, ROLE_PSO_STARTER_PS4):
-            r = member.guild.get_role(rid)
+        # Optional shared PSO "Category/Rank(s)" role
+        if ROLE_PSO_CATEGORY_PS4:
+            r = member.guild.get_role(ROLE_PSO_CATEGORY_PS4)
             if r: to_add.append(r)
-        if (subdept or "").upper() == "SASP":
+
+        sd = (subdept or "").upper()
+        if sd == "SASP":
             r = member.guild.get_role(ROLE_SASP_PS4)
             if r: to_add.append(r)
-        elif (subdept or "").upper() == "BCSO":
+            cadet = member.guild.get_role(ROLE_SASP_CADET_PS4)
+            if cadet: to_add.append(cadet)
+        elif sd == "BCSO":
             r = member.guild.get_role(ROLE_BCSO_PS4)
             if r: to_add.append(r)
+            prob = member.guild.get_role(ROLE_BCSO_PROB_PS4)
+            if prob: to_add.append(prob)
 
         # starter callsign
         try:
             cs = f"C-{random.randint(1000,1999)} | {member.name}"
-            await member.edit(nick=cs, reason="Initial PSO callsign")
+            await member.edit(nick=cs, reason="Initial PSO callsign (PS4)")
         except Exception:
             pass
 
     elif dept == "CO":
         for rid in (ROLE_CO_MAIN_PS4, ROLE_CO_CATEGORY_PS4, ROLE_CO_STARTER_PS4):
-            r = member.guild.get_role(rid)
-            if r: to_add.append(r)
+            if rid:
+                r = member.guild.get_role(rid)
+                if r: to_add.append(r)
         try:
             cs = f"CIV-{random.randint(1000,1999)} | {member.name}"
-            await member.edit(nick=cs, reason="Initial CO callsign")
+            await member.edit(nick=cs, reason="Initial CO callsign (PS4)")
         except Exception:
             pass
 
     elif dept == "SAFR":
         for rid in (ROLE_SAFR_MAIN_PS4, ROLE_SAFR_CATEGORY_PS4, ROLE_SAFR_STARTER_PS4):
-            r = member.guild.get_role(rid)
-            if r: to_add.append(r)
+            if rid:
+                r = member.guild.get_role(rid)
+                if r: to_add.append(r)
         try:
             cs = f"FF-{random.randint(100,999)} | {member.name}"
-            await member.edit(nick=cs, reason="Initial SAFR callsign")
+            await member.edit(nick=cs, reason="Initial SAFR callsign (PS4)")
         except Exception:
             pass
 
     if to_add:
-        try: await member.add_roles(*to_add, reason="Initial dept roles (PS4)")
-        except Exception: pass
+        try:
+            await member.add_roles(*to_add, reason="Initial dept roles (PS4)")
+        except Exception:
+            pass
+    elif dept == "PSO":
+        # Optional debug if nothing was added (helps setup)
+        try:
+            hq = bot.get_guild(HQ_GUILD_ID)
+            ch = hq.get_channel(AUTH_CODE_LOG_CHANNEL) if hq else None
+            if ch:
+                await ch.send("⚠️ PSO role assignment skipped on PS4 — check ROLE_PSO_CATEGORY_PS4, "
+                              "ROLE_SASP_PS4, ROLE_BCSO_PS4, ROLE_SASP_CADET_PS4, ROLE_BCSO_PROB_PS4.")
+        except Exception:
+            pass
 
+
+# -------------------------
+# Role Swap + PS5 mirroring (PSO subdept + starter roles)
+# -------------------------
 async def assign_ps_roles_ps5(member: discord.Member, dept: str, subdept: str | None):
-    to_add = []
+    to_add: list[discord.Role] = []
 
     if dept == "PSO":
-        for rid in (ROLE_PSO_MAIN_PS5, ROLE_PSO_CATEGORY_PS5, ROLE_PSO_STARTER_PS5):
-            if rid:
-                r = member.guild.get_role(rid)
-                if r: to_add.append(r)
-        if (subdept or "").upper() == "SASP":
+        # Optional shared PSO "Category/Rank(s)" role
+        if ROLE_PSO_CATEGORY_PS5:
+            r = member.guild.get_role(ROLE_PSO_CATEGORY_PS5)
+            if r: to_add.append(r)
+
+        sd = (subdept or "").upper()
+        if sd == "SASP":
             r = member.guild.get_role(ROLE_SASP_PS5)
             if r: to_add.append(r)
-        elif (subdept or "").upper() == "BCSO":
+            cadet = member.guild.get_role(ROLE_SASP_CADET_PS5)
+            if cadet: to_add.append(cadet)
+        elif sd == "BCSO":
             r = member.guild.get_role(ROLE_BCSO_PS5)
             if r: to_add.append(r)
+            prob = member.guild.get_role(ROLE_BCSO_PROB_PS5)
+            if prob: to_add.append(prob)
+
+        # starter callsign
         try:
             cs = f"C-{random.randint(1000,1999)} | {member.name}"
             await member.edit(nick=cs, reason="Initial PSO callsign (PS5)")
@@ -751,9 +800,21 @@ async def assign_ps_roles_ps5(member: discord.Member, dept: str, subdept: str | 
             pass
 
     if to_add:
-        try: await member.add_roles(*to_add, reason="Initial dept roles (PS5)")
-        except Exception: pass
-
+        try:
+            await member.add_roles(*to_add, reason="Initial dept roles (PS5)")
+        except Exception:
+            pass
+    elif dept == "PSO":
+        # Optional debug if nothing was added (helps setup)
+        try:
+            hq = bot.get_guild(HQ_GUILD_ID)
+            ch = hq.get_channel(AUTH_CODE_LOG_CHANNEL) if hq else None
+            if ch:
+                await ch.send("⚠️ PSO role assignment skipped on PS5 — check ROLE_PSO_CATEGORY_PS5, "
+                              "ROLE_SASP_PS5, ROLE_BCSO_PS5, ROLE_SASP_CADET_PS5, ROLE_BCSO_PROB_PS5.")
+        except Exception:
+            pass
+            
 # -------------------------
 # /auth_grant — generate 6-digit + DM link
 # -------------------------

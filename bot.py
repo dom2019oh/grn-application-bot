@@ -310,13 +310,13 @@ class SubdeptSelect(discord.ui.Select):
             min_values=1,
             max_values=1,
             options=[
-                discord.SelectOption(label="SASP (Highway Patrol)", value="SASP", emoji="🚓"),
-                discord.SelectOption(label="BCSO (Sheriff’s Office)", value="BCSO", emoji="⭐"),
+                discord.SelectOption(label="SASP (San Andreas State Police)", value="SASP", emoji="🚓"),
+                discord.SelectOption(label="BCSO (Blaine County Sheriff's Office)", value="BCSO", emoji="⭐"),
             ],
             custom_id=f"subdept_select_{user_id}"
         )
 
-async def callback(self, interaction: discord.Interaction):
+    async def callback(self, interaction: discord.Interaction):
         sess = app_sessions.get(self.user_id)
         if not sess or interaction.user.id != self.user_id:
             return await interaction.response.send_message("This selector isn’t for you.", ephemeral=True)

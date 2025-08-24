@@ -288,10 +288,13 @@ class PlatformSelect(discord.ui.Select):
         sess = app_sessions.get(self.user_id)
         if not sess or interaction.user.id != self.user_id:
             return await interaction.response.send_message("This selector isn’t for you.", ephemeral=True)
-        sess["platform"] = self.values[0]
-        await interaction.response.edit_message(content=f"✅ Platform: **{self.values[0]}** selected.", view=None)
-        self.view.stop()
 
+        # Save selection only
+        sess["platform"] = self.values[0]
+
+        # Remove the menu without changing content; parent will send the confirm embed
+        await interaction.response.edit_message(view=None)
+        self.view.stop()
 
 class PlatformSelectView(SafeView):
     def __init__(self, user_id: int, *, timeout: float = 120):
@@ -313,14 +316,17 @@ class SubdeptSelect(discord.ui.Select):
             custom_id=f"subdept_select_{user_id}"
         )
 
-    async def callback(self, interaction: discord.Interaction):
+async def callback(self, interaction: discord.Interaction):
         sess = app_sessions.get(self.user_id)
         if not sess or interaction.user.id != self.user_id:
             return await interaction.response.send_message("This selector isn’t for you.", ephemeral=True)
-        sess["subdept"] = self.values[0]
-        await interaction.response.edit_message(content=f"✅ Sub-Department: **{self.values[0]}** selected.", view=None)
-        self.view.stop()
 
+        # Save selection only
+        sess["subdept"] = self.values[0]
+
+        # Remove the menu without changing content; parent will send the confirm embed
+        await interaction.response.edit_message(view=None)
+        self.view.stop()
 
 class SubdeptSelectView(SafeView):
     def __init__(self, user_id: int, *, timeout: float = 120):

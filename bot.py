@@ -131,8 +131,8 @@ ROLE_SAFR_CATEGORY_PS5     = 1407034115311669409  # SAFR Category
 ROLE_SAFR_STARTER_PS5      = 1407034114082738178  # SAFR Cadet
 
 # Visuals
-PANEL_IMAGE_URL = "https://cdn.discordapp.com/attachments/1317589676336611381/1405147584456032276/Sunset_Photography_Tumblr_Banner.png"
-ACCEPT_GIF_URL  = "https://cdn.discordapp.com/attachments/1317589676336611381/1402368709783191713/Animated_LSRP.gif"
+PANEL_IMAGE_URL = "https://cdn.discordapp.com/attachments/1421126179934568578/1422535377926881330/GRN_-_Application_Panel_Banner_.gif?ex=68dd06cf&is=68dbb54f&hm=158304759b397a7bbb46d9468364b09cfebc36e97ff820febaad0d89c157bef5&"
+ACCEPT_GIF_URL  = "https://media.discordapp.net/attachments/1421126179934568578/1422535637873201173/GRN_-_HQ_Banner_1.gif?ex=68dd070d&is=68dbb58d&hm=0964f6c047aad74984e27983b19e78bb6886836d01f22473e6e3093293ff3d7e&=&width=1600&height=800"
 
 # OAuth app (use your real app creds)
 CLIENT_ID     = os.getenv("CLIENT_ID") or "1397974568706117774"

@@ -904,12 +904,12 @@ flask_app = Flask(__name__)
 
 @flask_app.route("/")
 def health():
-    return "✅ LSRP Application/Auth service running."
+    return "✅ GRN Application/Auth service running."
 
 _HTML_FORM = """
-<!doctype html><html><head><meta charset="utf-8"><title>LSRP Auth</title></head>
+<!doctype html><html><head><meta charset="utf-8"><title>GRN Auth</title></head>
 <body style="font-family:system-ui;margin:40px;max-width:780px">
-<h2>Los Santos Roleplay Network™® — Authorization</h2>
+<h2>Grant Roleplay Network™® — Authorization</h2>
 <p>Enter the 6-digit code the bot sent you in DMs to finish joining.</p>
 <form method="POST">
   <input name="pin" maxlength="6" pattern="\\d{6}" required placeholder="123456" />
@@ -1016,7 +1016,7 @@ def oauth_handler():
             pass
         return f"Join verify failed: {verify.status_code} {verify.text}", 400
 
-    # Post-join role/callsign (PS4/PS5 mirrored), remove pending, grant accepted, etc.
+    # Post-join role/callsign (PS4/PS5 mirrored), remove pending + verified, grant accepted + official
     try:
         loop = bot.loop
 
@@ -1035,7 +1035,7 @@ def oauth_handler():
             dept    = pdata["dept"]
             subdept = pdata.get("subdept", "N/A")
 
-            # Remove pending in HQ (if present) and add accepted platform role there
+            # HQ role handling
             hq = bot.get_guild(HQ_GUILD_ID)
             if hq:
                 try:
@@ -1048,10 +1048,19 @@ def oauth_handler():
                     if pending and pending in hm.roles:
                         try: await hm.remove_roles(pending, reason="Application resolved")
                         except Exception: pass
-                    # add accepted platform role (HQ)
+
+                    # remove verified
+                    verified = hq.get_role(ROLE_VERIFIED)
+                    if verified and verified in hm.roles:
+                        try: await hm.remove_roles(verified, reason="Swapped on acceptance")
+                        except Exception: pass
+
+                    # add accepted + official
                     acc = hq.get_role(ACCEPTED_PLATFORM_ROLES.get(platform))
-                    if acc and acc not in hm.roles:
-                        try: await hm.add_roles(acc, reason="Accepted")
+                    official = hq.get_role(ROLE_OFFICIAL)
+                    roles_to_add = [r for r in (acc, official) if r and r not in hm.roles]
+                    if roles_to_add:
+                        try: await hm.add_roles(*roles_to_add, reason="Application accepted")
                         except Exception: pass
 
             # PS subdept + starter roles

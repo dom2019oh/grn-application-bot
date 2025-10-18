@@ -1,5 +1,5 @@
 # =====================================================
-# LSRP Network Application System (Clean) + Web Auth + /auth_grant
+# Grant RP Network Application System (Clean) + Web Auth + /auth_grant
 # - Panel + DM application flows (PSO/CO/SAFR) — unchanged
 # - Q4 is plain text (no buttons)
 # - Staff review embed posting — unchanged
@@ -137,7 +137,7 @@ ACCEPT_GIF_URL  = "https://media.discordapp.net/attachments/1421126179934568578/
 # OAuth app (use your real app creds)
 CLIENT_ID     = os.getenv("CLIENT_ID") or "1397974568706117774"
 CLIENT_SECRET = os.getenv("CLIENT_SECRET") or "KcaapGwCEsH_JDlIbrAX3lghSC-tDREN"
-REDIRECT_URI  = "https://auth.lsrpnetwork.com/auth"  # fixed
+REDIRECT_URI  = "https://auth.grantrp.com/auth"  # fixed
 
 # Timing
 APP_TOTAL_TIME_SECONDS = 35 * 60  # 35 minutes
@@ -191,14 +191,14 @@ async def report_interaction_error(interaction: discord.Interaction | None, err:
 # Questions (20 each)
 # -------------------------
 COMMON_4 = [
-    ("Q1",  "What's your Discord username?"),
+    ("Q1",  "What's your Discord username?(eg. officialdom2019og)"),
     ("Q2",  "How old are you IRL?"),
     ("Q3",  "What's your Date of Birth IRL?"),
     ("Q4",  "How did you find us? (Instagram / Tiktok / Partnership / Friend / Other)"),
 ]
 
 PSO_SPECIFIC_16 = [
-    ("Q5",  "What attracts you to Public Safety work within LSRP?"),
+    ("Q5",  "What attracts you to Public Safety work within Grant Roleplay?"),
     ("Q6",  "Do you have prior law enforcement RP experience? If yes, where and what rank?"),
     ("Q7",  "Explain the difference between BCSO and SASP jurisdictions."),
     ("Q8",  "Scenario: First on a shots-fired scene with civilians nearby. What’s your immediate plan?"),
@@ -280,9 +280,21 @@ class PlatformSelect(discord.ui.Select):
             min_values=1,
             max_values=1,
             options=[
-                discord.SelectOption(label="PlayStation 5", value="PS5", emoji="🎮"),
-                discord.SelectOption(label="PlayStation 4", value="PS4", emoji="🎮"),
-                discord.SelectOption(label="Xbox Old Gen", value="XboxOG", emoji="🕹️"),
+                discord.SelectOption(
+                    label="PlayStation 5",
+                    value="PS5",
+                    emoji=discord.PartialEmoji(name="ps5", id=1421416176377925672)  # <:ps5:1423000000000000003>
+                ),
+                discord.SelectOption(
+                    label="PlayStation 4",
+                    value="PS4",
+                    emoji=discord.PartialEmoji(name="ps4", id=1421207705682448415)  # <:ps4:1423000000000000004>
+                ),
+                discord.SelectOption(
+                    label="Xbox Old Gen",
+                    value="XboxOG",
+                    emoji=discord.PartialEmoji(name="xbox", id=1421415600219230310)  # <:xbox:1423000000000000005>
+                ),
             ],
             custom_id=f"platform_select_{user_id}"
         )
@@ -313,8 +325,16 @@ class SubdeptSelect(discord.ui.Select):
             min_values=1,
             max_values=1,
             options=[
-                discord.SelectOption(label="SASP (San Andreas State Police)", value="SASP", emoji="🚓"),
-                discord.SelectOption(label="BCSO (Blaine County Sheriff's Office)", value="BCSO", emoji="⭐"),
+                discord.SelectOption(
+                    label="SASP (San Andreas State Police)",
+                    value="SASP",
+                    emoji=discord.PartialEmoji(name="sasp", id=1429130587926565017)  # <:sasp:1423000000000000006>
+                ),
+                discord.SelectOption(
+                    label="BCSO (Blaine County Sheriff's Office)",
+                    value="BCSO",
+                    emoji=discord.PartialEmoji(name="bcso", id=1429129827495182459)  # <:bcso:1423000000000000007>
+                ),
             ],
             custom_id=f"subdept_select_{user_id}"
         )
@@ -343,11 +363,23 @@ class DepartmentSelect(discord.ui.Select):
             min_values=1,
             max_values=1,
             options=[
-                discord.SelectOption(label="Public Safety Office (PSO)", value="PSO", emoji="🚓"),
-                discord.SelectOption(label="Civilian Operations (CO)", value="CO", emoji="🧑"),
-                discord.SelectOption(label="San Andreas Fire & Rescue (SAFR)", value="SAFR", emoji="🚒"),
+                discord.SelectOption(
+                    label="Public Safety Office (PSO)",
+                    value="PSO",
+                    emoji=discord.PartialEmoji(name="pso", id=1421545956901650584)  # <:pso:1423000000000000000>
+                ),
+                discord.SelectOption(
+                    label="Civilian Operations (CO)",
+                    value="CO",
+                    emoji=discord.PartialEmoji(name="civ", id=1429127933573730464)  # <:civ:1423000000000000001>
+                ),
+                discord.SelectOption(
+                    label="San Andreas Fire & Rescue (SAFR)",
+                    value="SAFR",
+                    emoji=discord.PartialEmoji(name="safr", id=1421561107037814835)  # <:safr:1423000000000000002>
+                ),
             ],
-            custom_id="lsrp_app_panel_dept_select"  # persistent
+            custom_id="grn_app_panel_dept_select"  # updated for GRN
         )
 
     async def callback(self, interaction: discord.Interaction):

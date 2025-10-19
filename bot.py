@@ -1131,9 +1131,9 @@ def oauth_handler():
             print("apply roles error:", e)
 
     asyncio.run_coroutine_threadsafe(_apply(), bot.loop)
-    
-pending_codes.pop(user_id, None)
-return render_template("success.html")
+
+    pending_codes.pop(user_id, None)
+    return render_template("success.html")
 
 # =====================================================
 # Section 6 — Startup & Runner

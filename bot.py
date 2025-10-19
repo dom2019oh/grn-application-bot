@@ -19,7 +19,7 @@ import discord
 from discord import app_commands, Embed, Object
 from discord.ext import commands
 from discord.ui import View, Select
-from flask import Flask, request, redirect, render_template_string
+from flask import Flask, request, redirect, render_template, render_template_string
 import urllib.parse
 
 # -------------------------
@@ -1131,32 +1131,9 @@ def oauth_handler():
             print("apply roles error:", e)
 
     asyncio.run_coroutine_threadsafe(_apply(), bot.loop)
-
-    pending_codes.pop(user_id, None)
-    return """
-<!doctype html><html lang="en"><head>
-<meta charset="utf-8"><title>Authorized — Grant Roleplay Network™</title>
-<style>
-  html,body {margin:0;height:100%;display:flex;align-items:center;justify-content:center;
-             background:linear-gradient(135deg,#4ba0ff,#9dd1ff,#ffffff);
-             font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:white;}
-  .success-box {
-    text-align:center;padding:40px 60px;border-radius:25px;
-    background:rgba(255,255,255,0.15);backdrop-filter:blur(25px) saturate(180%);
-    box-shadow:0 8px 40px rgba(0,0,0,0.25);
-    animation:fadeIn 1s ease forwards;
-  }
-  h1 {font-size:28px;margin-bottom:10px;}
-  p {font-size:16px;opacity:.9;}
-  @keyframes fadeIn {from{opacity:0;transform:translateY(20px);}to{opacity:1;transform:none;}}
-</style></head>
-<body>
-<div class="success-box">
-  <h1>✅ Authorization Complete</h1>
-  <p>You can safely close this window and return to Discord.</p>
-</div>
-</body></html>
-"""
+    
+pending_codes.pop(user_id, None)
+return render_template("success.html")
 
 # =====================================================
 # Section 6 — Startup & Runner

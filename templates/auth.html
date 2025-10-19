@@ -1,1 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Grant Roleplay Network™ | Authorization</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+</head>
 
+<body style="margin:0; overflow:hidden; font-family:system-ui; height:100vh; display:flex; justify-content:center; align-items:center; color:white;">
+
+  <!-- Background video -->
+  <video autoplay muted loop playsinline id="bg-video"
+    style="position: fixed; right: 0; bottom: 0; min-width: 100%; min-height: 100%; z-index: -1; object-fit: cover; filter: blur(2px) brightness(0.8);">
+    <source src="/static/Glassmorphism%20Design%20Banner.mp4" type="video/mp4">
+  </video>
+
+  <!-- Form container -->
+  <div style="backdrop-filter: blur(12px); background: rgba(255,255,255,0.15); border-radius: 20px; padding: 40px 60px; text-align:center; box-shadow: 0 0 60px rgba(0,0,0,0.25);">
+    <h1 style="font-size:2em; font-weight:600; margin-bottom:10px;">Grant Roleplay Network™</h1>
+    <p style="opacity:0.9;">Enter the 6-digit code you received in Discord DMs.</p>
+    <form method="POST">
+      <input name="pin" maxlength="6" required placeholder="123456" pattern="\\d{6}"
+        style="margin-top:20px; width:200px; padding:10px; border-radius:8px; border:none; text-align:center; font-size:1.1em;"><br>
+      <button type="submit" style="margin-top:20px; background:#3b82f6; border:none; border-radius:8px; padding:10px 40px; color:white; font-size:1em; cursor:pointer;">Confirm</button>
+    </form>
+    <p style="color:rgba(255,255,255,0.6); margin-top:15px; font-size:0.9em;">
+      If you opened this directly, return to your DM and use the link again.
+    </p>
+  </div>
+
+</body>
+</html>

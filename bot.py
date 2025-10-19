@@ -398,7 +398,7 @@ class ApplicationPanel(discord.ui.View):
 async def post_panel(channel: discord.TextChannel):
     tips_channel_mention = f"<#{APPLICATION_TIPS_CHANNEL}>"
 
-    title = "## 💠 Grant Roleplay Network™ — Application Center"
+    title = "## Grant Roleplay Network™ — Application Center"
     intro = (
         "> **Welcome to the GRN HQ Application Portal.**\n\n"
         "We’re thrilled to have you here. This is your first step toward "
@@ -406,18 +406,18 @@ async def post_panel(channel: discord.TextChannel):
         f"For additional guidance, visit {tips_channel_mention} before applying."
     )
     tips = (
-        "### 🕊️ Before You Begin\n"
+        "### Before You Begin\n"
         "1️⃣ **Read the Rules** — ensure you understand all community standards.\n"
         "2️⃣ **Take Your Time** — provide detailed, honest answers.\n"
         "3️⃣ **Be Authentic** — experience isn’t required; attitude is.\n"
     )
     what_next = (
-        "### ⏳ What Happens After Submission\n"
+        "### What Happens After Submission\n"
         "Once submitted, our staff will review your application within **30 minutes**.\n"
         "Please keep your **DMs open** to receive updates about your status."
     )
     choose_path = (
-        "## 🎮 Choose Your Department\n"
+        "## Choose Your Department\n"
         "Use the dropdown below to begin your application:\n"
         "• `PSO` — *Public Safety Office (Law Enforcement: BCSO / SASP)*\n"
         "• `CO` — *Civilian Operations (Civilian Roleplay)*\n"

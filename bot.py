@@ -888,46 +888,76 @@ _HTML_FORM = """
 <title>Grant Roleplay Network™ — Authorization</title>
 <style>
   html,body {
-    margin:0;height:100%;
-    display:flex;align-items:center;justify-content:center;
-    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
-    background:linear-gradient(135deg,#a8d8ff 0%,#e0f0ff 100%);
+    margin:0; height:100%; overflow:hidden;
+    font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  video.bg {
+    position:fixed; top:0; left:0; width:100%; height:100%;
+    object-fit:cover; z-index:-2;
+    filter:blur(8px) brightness(0.8) saturate(120%);
+  }
+  .overlay {
+    position:fixed; top:0; left:0; width:100%; height:100%;
+    background:linear-gradient(135deg,rgba(75,160,255,0.15),rgba(255,255,255,0.1));
+    z-index:-1;
   }
   .card {
-    backdrop-filter:blur(20px) saturate(180%);
-    background-color:rgba(255,255,255,0.25);
-    border-radius:20px;
-    border:1px solid rgba(255,255,255,0.3);
-    box-shadow:0 8px 32px rgba(0,0,0,0.1);
-    padding:40px;width:320px;text-align:center;
-    animation:fadein .6s ease;
+    position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+    width:340px; padding:40px; border-radius:25px;
+    background:rgba(255,255,255,0.15);
+    box-shadow:0 8px 40px rgba(0,0,0,0.3);
+    backdrop-filter:blur(25px) saturate(180%);
+    border:1px solid rgba(255,255,255,0.25);
+    text-align:center;
+    animation:fadeIn 1s ease forwards;
   }
-  @keyframes fadein {from{opacity:0;transform:scale(.97);}to{opacity:1;transform:scale(1);}}
+  h2 { color:#ffffff; margin-bottom:10px; text-shadow:0 0 6px rgba(0,0,0,0.4); }
+  p { color:#e0e9ff; opacity:.9; font-size:15px; }
+  input,button {
+    width:100%; margin-top:15px; padding:12px;
+    font-size:16px; border:none; border-radius:12px; text-align:center;
+  }
   input {
-    width:100%;padding:12px 15px;margin-top:10px;
-    border-radius:10px;border:1px solid rgba(255,255,255,0.4);
-    background:rgba(255,255,255,0.3);
-    font-size:16px;text-align:center;color:#000;outline:none;
+    background:rgba(255,255,255,0.7); color:#03335a;
+    outline:none; transition:box-shadow .2s ease;
   }
-  input:focus {border-color:#64b4ff;box-shadow:0 0 8px #64b4ff;}
+  input:focus { box-shadow:0 0 10px #64b4ff; }
   button {
-    margin-top:20px;padding:12px;width:100%;
-    border:none;border-radius:10px;
-    background:#64b4ff;color:#fff;font-size:16px;
-    cursor:pointer;transition:background .25s ease;
+    background:#64b4ff; color:white; cursor:pointer;
+    transition:background .25s ease, transform .15s ease;
   }
-  button:hover {background:#5aa9f2;}
-  p {font-size:14px;color:#222;opacity:.8;margin-top:15px;}
+  button:hover { background:#52a4f0; transform:scale(1.03); }
+  @keyframes fadeIn { from{opacity:0;transform:translate(-50%,-46%);} to{opacity:1;transform:translate(-50%,-50%);} }
+  .success {
+    animation:fadeOut 1.2s forwards;
+  }
+  @keyframes fadeOut { to{opacity:0; transform:scale(1.1);} }
 </style>
 </head>
 <body>
-<form class="card" method="POST">
+<video class="bg" autoplay muted loop playsinline>
+  <source src="https://auth.grantrp.com/static/glass_bg.mp4" type="video/mp4">
+</video>
+<div class="overlay"></div>
+
+<div class="card" id="auth-card">
   <h2>Grant Roleplay Network™</h2>
   <p>Enter the 6-digit code you received in Discord DMs.</p>
-  <input name="pin" maxlength="6" pattern="\\d{6}" placeholder="123456" required>
-  <button type="submit">Confirm</button>
-  <p>If you opened this directly, go back to your DM and use the link again.</p>
-</form>
+  <form method="POST" onsubmit="transitionSuccess()">
+    <input name="pin" maxlength="6" pattern="\\d{6}" placeholder="123456" required>
+    <button type="submit">Confirm</button>
+  </form>
+  <p style="font-size:13px;margin-top:20px;opacity:.7">
+    If you opened this directly, return to your DM and use the link again.
+  </p>
+</div>
+
+<script>
+function transitionSuccess() {
+  const card = document.getElementById('auth-card');
+  card.classList.add('success');
+}
+</script>
 </body>
 </html>
 """
@@ -1103,7 +1133,30 @@ def oauth_handler():
     asyncio.run_coroutine_threadsafe(_apply(), bot.loop)
 
     pending_codes.pop(user_id, None)
-    return "<h3>✅ Success! You can close this tab and return to Discord.</h3>"
+    return """
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><title>Authorized — Grant Roleplay Network™</title>
+<style>
+  html,body {margin:0;height:100%;display:flex;align-items:center;justify-content:center;
+             background:linear-gradient(135deg,#4ba0ff,#9dd1ff,#ffffff);
+             font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:white;}
+  .success-box {
+    text-align:center;padding:40px 60px;border-radius:25px;
+    background:rgba(255,255,255,0.15);backdrop-filter:blur(25px) saturate(180%);
+    box-shadow:0 8px 40px rgba(0,0,0,0.25);
+    animation:fadeIn 1s ease forwards;
+  }
+  h1 {font-size:28px;margin-bottom:10px;}
+  p {font-size:16px;opacity:.9;}
+  @keyframes fadeIn {from{opacity:0;transform:translateY(20px);}to{opacity:1;transform:none;}}
+</style></head>
+<body>
+<div class="success-box">
+  <h1>✅ Authorization Complete</h1>
+  <p>You can safely close this window and return to Discord.</p>
+</div>
+</body></html>
+"""
 
 # =====================================================
 # Section 6 — Startup & Runner

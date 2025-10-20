@@ -980,10 +980,11 @@ def oauth_handler():
         )
         return redirect(auth_url, code=302)
 
-    # Render glass UI for POST submission
+    # Render external HTML template (auth.html)
     if request.method == "GET":
-        return _HTML_FORM
+        return render_template("auth.html")
 
+    # Handle POST (6-digit pin submission)
     pin = (request.form.get("pin") or "").strip()
     code = request.args.get("code")
     if not pin.isdigit():
